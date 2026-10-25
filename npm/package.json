@@ -1,0 +1,12 @@
+{
+  "name": "@masterdaweb/cli",
+  "version": "0.0.0",
+  "description": "mw — Master da Web from the terminal: serverless apps, databases and Object Storage",
+  "license": "UNLICENSED",
+  "homepage": "https://www.masterdaweb.com",
+  "repository": { "type": "git", "url": "git+https://github.com/masterdaweb/mw-cli.git" },
+  "bin": { "mw": "bin/mw.js" },
+  "files": ["bin/mw.js", "install.js"],
+  "scripts": { "postinstall": "node install.js" },
+  "engines": { "node": ">=18" }
+}

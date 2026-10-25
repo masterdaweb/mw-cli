@@ -1,0 +1,94 @@
+# Releases of `mw`: `git tag v1.2.3 && goreleaser release --clean`.
+# One static binary per system (no cgo), archives with checksums, and the
+# Homebrew formula pushed to the tap. install.sh and the npm package download
+# these same archives and check them against checksums.txt.
+version: 2
+
+project_name: mw
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - id: mw
+    main: ./cmd/mw
+    binary: mw
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - id: mw
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    # mw_1.2.3_darwin_arm64.tar.gz: what install.sh and the npm package fetch.
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE*
+
+# The image (Dockerfile): the same binary on Alpine with the database
+# clients, one per architecture, then one manifest for both.
+dockers:
+  - id: mw-amd64
+    ids: [mw]
+    goos: linux
+    goarch: amd64
+    use: buildx
+    dockerfile: Dockerfile
+    image_templates:
+      - "ghcr.io/masterdaweb/mw-cli:{{ .Version }}-amd64"
+    build_flag_templates:
+      - --platform=linux/amd64
+      - --label=org.opencontainers.image.source=https://github.com/masterdaweb/mw-cli
+      - --label=org.opencontainers.image.version={{ .Version }}
+  - id: mw-arm64
+    ids: [mw]
+    goos: linux
+    goarch: arm64
+    use: buildx
+    dockerfile: Dockerfile
+    image_templates:
+      - "ghcr.io/masterdaweb/mw-cli:{{ .Version }}-arm64"
+    build_flag_templates:
+      - --platform=linux/arm64
+      - --label=org.opencontainers.image.source=https://github.com/masterdaweb/mw-cli
+      - --label=org.opencontainers.image.version={{ .Version }}
+
+docker_manifests:
+  - name_template: "ghcr.io/masterdaweb/mw-cli:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/masterdaweb/mw-cli:{{ .Version }}-amd64"
+      - "ghcr.io/masterdaweb/mw-cli:{{ .Version }}-arm64"
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+changelog:
+  use: git
+  sort: asc
+
+brews:
+  - name: mw
+    repository:
+      owner: masterdaweb
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: https://www.masterdaweb.com
+    description: Master da Web from the terminal — serverless apps, databases and Object Storage
+    license: Proprietary
+    test: |
+      assert_match version.to_s, shell_output("#{bin}/mw --version")
+    install: |
+      bin.install "mw"
+      generate_completions_from_executable(bin/"mw", "completion")
