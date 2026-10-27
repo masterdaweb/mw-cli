@@ -54,6 +54,22 @@ type Problem struct {
 	Reason    string                 `json:"reason"`
 	Params    map[string]interface{} `json:"params"`
 	RequestID string                 `json:"request_id"`
+	// Instance is the path of the request that failed.
+	Instance string `json:"instance"`
+	// Errors names the fields a request got wrong, each with why.
+	Errors []FieldError `json:"errors"`
+	// insufficient_balance: how much is missing, on which subscription.
+	SubscriptionID string      `json:"subscription_id"`
+	ShortfallCents json.Number `json:"shortfall_cents"`
+}
+
+// FieldError is one field of a refused request: `field` is its path in the
+// body (app_inputs.licence_key), `issues` what is wrong with it.
+type FieldError struct {
+	Field   string   `json:"field"`
+	Issues  []string `json:"issues"`
+	Code    string   `json:"code"`
+	Message string   `json:"message"`
 }
 
 func (p *Problem) Error() string {

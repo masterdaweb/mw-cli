@@ -85,10 +85,45 @@ brews:
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     directory: Formula
     homepage: https://www.masterdaweb.com
-    description: Master da Web from the terminal — serverless apps, databases and Object Storage
+    description: Master da Web from the terminal — VPS instances, serverless apps, databases, storage and network
     license: Proprietary
     test: |
       assert_match version.to_s, shell_output("#{bin}/mw --version")
     install: |
       bin.install "mw"
       generate_completions_from_executable(bin/"mw", "completion")
+
+# Windows package managers. Off until the owner decides where they live:
+# both need a public repository (a Scoop bucket; a fork of
+# microsoft/winget-pkgs for the PR) and a token. install.ps1 covers Windows
+# meanwhile (`irm …/install.ps1 | iex`), from the same zip and checksums.
+#
+# scoops:
+#   - name: mw
+#     repository:
+#       owner: masterdaweb
+#       name: scoop-bucket
+#       token: "{{ .Env.SCOOP_BUCKET_TOKEN }}"
+#     directory: bucket
+#     homepage: https://www.masterdaweb.com
+#     description: Master da Web from the terminal — VPS instances, serverless apps, databases, storage and network
+#     license: Proprietary
+#
+# winget:
+#   - name: mw
+#     publisher: Master da Web
+#     package_identifier: MasterDaWeb.mw
+#     short_description: Master da Web from the terminal
+#     license: Proprietary
+#     homepage: https://www.masterdaweb.com
+#     repository:
+#       owner: masterdaweb
+#       name: winget-pkgs
+#       branch: "mw-{{ .Version }}"
+#       token: "{{ .Env.WINGET_TOKEN }}"
+#       pull_request:
+#         enabled: true
+#         base:
+#           owner: microsoft
+#           name: winget-pkgs
+#           branch: master

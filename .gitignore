@@ -1,0 +1,9 @@
+# Builds
+/mw
+/dist/
+*.exe
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/

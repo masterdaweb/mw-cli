@@ -33,7 +33,17 @@ func (a *App) followDeployment(ctx context.Context, d *api.Deployment) error {
 		return err
 	}
 	seen := map[string]string{}
+	toldRollout := false
 	for {
+		if rollingOut(d) && !toldRollout {
+			toldRollout = true
+			until := d.Rollout.Until
+			if t, err := time.Parse(time.RFC3339, until); err == nil {
+				until = t.Local().Format("15:04")
+			}
+			a.printf("  rolling out   %d%% of the requests go to the new version until %s; then all of them if it stays healthy\n"+
+				"                (`mw deployments promote` takes them all now, `mw deployments abort` goes back)\n", d.Rollout.Percent, until)
+		}
 		for _, s := range d.Steps {
 			// A step is told once it starts, then when it ends.
 			if s.Status == "PENDING" || seen[s.Kind] == s.Status {
@@ -366,6 +376,9 @@ func deploymentsCmd(a *App) *cobra.Command {
 	cmd.Flags().BoolVar(&revisions, "revisions", false, "list revisions (what rollback goes back to)")
 	cmd.Flags().IntVar(&limit, "limit", 20, "how many")
 	cmd.AddCommand(deploymentsCancelCmd(a))
+	cmd.AddCommand(deploymentsRolloutCmd(a, "promote"))
+	cmd.AddCommand(deploymentsRolloutCmd(a, "abort"))
+	cmd.AddCommand(deploymentsBuildLogCmd(a))
 	return cmd
 }
 

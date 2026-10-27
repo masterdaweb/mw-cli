@@ -43,7 +43,8 @@ func storageCmd(a *App) *cobra.Command {
 		},
 	}
 	cmd.AddCommand(storageInfoCmd(a), storageCreateCmd(a), storageGetCmd(a), storageUpdateCmd(a),
-		storageDeleteCmd(a), storageRestoreCmd(a), storageLsCmd(a), keysCmd(a), storageBindCmd(a), storageUnbindCmd(a))
+		storageDeleteCmd(a), storageRestoreCmd(a), storageLsCmd(a), storageRmCmd(a), storagePresignCmd(a),
+		keysCmd(a), storageBindCmd(a), storageUnbindCmd(a))
 	return cmd
 }
 
@@ -101,6 +102,7 @@ func storageInfoCmd(a *App) *cobra.Command {
 
 func storageCreateCmd(a *App) *cobra.Command {
 	var public, noProtection bool
+	var project string
 	cmd := &cobra.Command{
 		Use:   "create <bucket>",
 		Short: "Create a bucket (private unless --public; its name is unique on the whole platform)",
@@ -118,17 +120,24 @@ func storageCreateCmd(a *App) *cobra.Command {
 			if err := c.Do(cmd.Context(), "POST", "/object-storage/buckets", nil, body, &b); err != nil {
 				return err
 			}
-			return a.print(b, func(w *tabwriter.Writer) {
+			if err := a.print(b, func(w *tabwriter.Writer) {
 				fmt.Fprintf(w, "Bucket %s created (%s).\n", b.Name, b.Location)
 				if b.PublicURL != nil {
 					fmt.Fprintf(w, "Its files are public at %s/<file>.\n", strings.TrimRight(*b.PublicURL, "/"))
 				}
 				fmt.Fprintln(w, "Next: `mw storage keys create <name> --bucket "+b.Name+"`, or bind it to a service.")
-			})
+			}); err != nil {
+				return err
+			}
+			if project != "" {
+				return a.putInProject(cmd.Context(), project, "BUCKET", b.Name)
+			}
+			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&public, "public", false, "anyone may read its files (never write them)")
 	cmd.Flags().BoolVar(&noProtection, "no-deletion-protection", false, "create it unprotected from deletion")
+	cmd.Flags().StringVar(&project, "project", "", "put the new bucket in this project (name or id)")
 	return cmd
 }
 

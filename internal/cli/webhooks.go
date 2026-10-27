@@ -28,6 +28,7 @@ func webhooksCmd(a *App) *cobra.Command {
 		Example: "  mw webhooks\n" +
 			"  mw webhooks add https://loja.com.br/hooks/mw --events deployment.failed,alert.*\n" +
 			"  mw webhooks add https://hooks.slack.com/services/T000/B000/XXXX\n" +
+			"  mw webhooks get 0193f0e2\n" +
 			"  mw webhooks test 0193f0e2\n" +
 			"  mw webhooks remove 0193f0e2",
 		Args: cobra.NoArgs,
@@ -318,7 +319,34 @@ func webhooksCmd(a *App) *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(add, update, remove, rotate, test, deliveries, eventTypes)
+	get := &cobra.Command{
+		Use:   "get <id>",
+		Short: "A webhook: its address, events, state and last deliveries",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			h, err := a.webhookByID(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			var d detail
+			d.add("ID", h.ID)
+			d.add("Kind", strings.ToLower(h.Kind))
+			d.add("Address", h.URL)
+			if h.Description != nil && *h.Description != "" {
+				d.add("Description", *h.Description)
+			}
+			d.add("Events", eventsText(h.Events))
+			d.add("State", webhookState(*h))
+			d.add("Last delivered", whenPtr(h.LastSuccessAt))
+			if h.LastFailureAt != nil {
+				d.add("Last failure", whenPtr(h.LastFailureAt))
+			}
+			d.add("Created", when(h.CreatedAt))
+			return a.printDetail(h, d)
+		},
+	}
+
+	cmd.AddCommand(get, add, update, remove, rotate, test, deliveries, eventTypes)
 	return cmd
 }
 
@@ -332,6 +360,27 @@ func (a *App) webhooks(ctx context.Context) ([]api.Webhook, error) {
 		return nil, err
 	}
 	return hooks, nil
+}
+
+// webhookByID reads one webhook: by its whole id from GET /v1/webhooks/{id};
+// by the start of an id or its description — or from an API without that
+// route — out of the list.
+func (a *App) webhookByID(ctx context.Context, ref string) (*api.Webhook, error) {
+	if uuidRe.MatchString(ref) {
+		c, err := a.Client()
+		if err != nil {
+			return nil, err
+		}
+		var h api.Webhook
+		err = c.Do(ctx, "GET", "/webhooks/"+ref, nil, nil, &h)
+		if err == nil {
+			return &h, nil
+		}
+		if !routeMissing(err) {
+			return nil, err
+		}
+	}
+	return a.webhook(ctx, ref)
 }
 
 // webhook finds one by its id, the start of it (as the list shows it), or its

@@ -156,8 +156,9 @@ func dbBindCmd(a *App, engine string) *cobra.Command {
 		Short: "Give a service this database as variables, with a login of its own",
 		Long: "Bind a database to a service: the service gets a login of its own and the variables\n" +
 			"its code reads. Layouts: url (DATABASE_URL / REDIS_URL, the default), framework\n" +
-			"(Laravel's DB_* / REDIS_*), libpq (PostgreSQL's PG*) or prefixed (with --prefix).\n" +
-			"MySQL and MariaDB take url, framework or prefixed.",
+			"(Laravel's DB_* / REDIS_*), libpq (PostgreSQL's PG*), prefixed (with --prefix) or\n" +
+			"dotnet (ConnectionStrings__DefaultConnection, Redis for Redis; --prefix names it).\n" +
+			"MySQL and MariaDB take url, framework, prefixed or dotnet.",
 		Example: "  mw db bind loja-prod --service web --layout framework\n  mw redis bind filas --service worker",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -168,9 +169,9 @@ func dbBindCmd(a *App, engine string) *cobra.Command {
 			return a.bind(cmd, bindingKind(d.Engine), d.Name, o)
 		},
 	}
-	layouts := "url, framework, libpq or prefixed"
-	if engine == "valkey" {
-		layouts = "url, framework or prefixed"
+	layouts := "url, framework, libpq, prefixed or dotnet"
+	if engine == "valkey" || engine == "mysql" || engine == "mariadb" {
+		layouts = "url, framework, prefixed or dotnet"
 	}
 	o.flags(cmd, layouts, false)
 	return cmd

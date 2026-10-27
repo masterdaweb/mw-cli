@@ -17,23 +17,20 @@ func projectsCmd(a *App) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "projects",
 		Aliases: []string{"project"},
-		Short:   "Projects: a group of services, and the databases and buckets they use",
-		Args:    cobra.NoArgs,
+		Short:   "Projects: what belongs to one system — instances, apps, databases and buckets",
+		Long: "A project groups what belongs to the same system or client: VPS instances, serverless\n" +
+			"services, databases and buckets. `mw projects resources` lists and changes what is in one.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			c, err := a.Client()
+			all, err := a.projects(cmd.Context())
 			if err != nil {
 				return err
 			}
-			all, err := api.All[api.Project](cmd.Context(), c, "/serverless/projects", nil)
-			if err != nil {
-				return err
+			l := listing{headers: []string{"NAME", "INSTANCES", "SERVICES", "LIVE", "FAILED", "DATABASES", "BUCKETS", "ID"}, empty: "No projects yet: `mw projects create <name>`."}
+			for _, p := range all {
+				l.add(p.ID, p.Name, fmt.Sprint(p.InstanceCount), fmt.Sprint(p.ServiceCount), fmt.Sprint(p.LiveCount), fmt.Sprint(p.FailedCount), fmt.Sprint(p.DatabaseCount), fmt.Sprint(p.BucketCount), p.ID)
 			}
-			return a.print(all, func(w *tabwriter.Writer) {
-				fmt.Fprintln(w, "NAME\tSERVICES\tLIVE\tFAILED\tID")
-				for _, p := range all {
-					fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%s\n", p.Name, p.ServiceCount, p.LiveCount, p.FailedCount, p.ID)
-				}
-			})
+			return a.printList(all, l)
 		},
 	}
 	cmd.AddCommand(&cobra.Command{
@@ -91,13 +88,15 @@ func projectsCmd(a *App) *cobra.Command {
 		description string
 		freeze      string
 		unfreeze    bool
+		previews    bool
 	)
 	update := &cobra.Command{
 		Use:   "update <project>",
-		Short: "Change a project's deletion protection, description, or freeze its deploys",
+		Short: "Change a project's deletion protection, description, preview environments, or freeze its deploys",
 		Example: "  mw projects update loja-staging --deletion-protection=false\n" +
 			"  mw projects update loja --freeze \"Black Friday\"\n" +
-			"  mw projects update loja --unfreeze",
+			"  mw projects update loja --unfreeze\n" +
+			"  mw projects update loja --previews",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			p, err := a.resolveProject(cmd.Context(), args[0])
@@ -127,8 +126,11 @@ func projectsCmd(a *App) *cobra.Command {
 				patch["deploys_frozen"] = false
 				patch["frozen_reason"] = nil
 			}
+			if f.Changed("previews") {
+				patch["previews_enabled"] = previews
+			}
 			if len(patch) == 0 {
-				return errors.New("nothing to change: pass --deletion-protection, --description, --freeze or --unfreeze")
+				return errors.New("nothing to change: pass --deletion-protection, --description, --previews, --freeze or --unfreeze")
 			}
 			c, _ := a.Client()
 			var out api.Project
@@ -136,11 +138,16 @@ func projectsCmd(a *App) *cobra.Command {
 				return err
 			}
 			return a.print(out, func(w *tabwriter.Writer) {
-				fmt.Fprintf(w, "%s saved: deletion protection %s, deploys %s.\n", out.Name, onOff(out.DeletionProtection), map[bool]string{true: "frozen", false: "allowed"}[out.DeploysFrozen])
+				fmt.Fprintf(w, "%s saved: deletion protection %s, deploys %s.", out.Name, onOff(out.DeletionProtection), map[bool]string{true: "frozen", false: "allowed"}[out.DeploysFrozen])
+				if f.Changed("previews") {
+					fmt.Fprintf(w, " Preview environments %s.", onOff(out.PreviewsEnabled))
+				}
+				fmt.Fprintln(w)
 			})
 		},
 	}
 	update.Flags().BoolVar(&protect, "deletion-protection", true, "protect it from deletion")
+	update.Flags().BoolVar(&previews, "previews", true, "a copy of the project for each pull request against a branch it deploys, removed when it closes")
 	update.Flags().StringVar(&description, "description", "", "what the project is for (\"\" clears it)")
 	update.Flags().StringVar(&freeze, "freeze", "", "refuse every new deployment until --unfreeze, saying why")
 	update.Flags().BoolVar(&unfreeze, "unfreeze", false, "allow deployments again")
@@ -177,10 +184,51 @@ func projectsCmd(a *App) *cobra.Command {
 		})
 	}
 
+	cmd.AddCommand(&cobra.Command{
+		Use:   "previews <project>",
+		Short: "A project's preview environments: one per open pull request",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p, err := a.resolveProject(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			c, _ := a.Client()
+			var list []api.PreviewEnvironment
+			if err := c.Do(cmd.Context(), "GET", "/serverless/projects/"+p.ID+"/previews", nil, nil, &list); err != nil {
+				return err
+			}
+			return a.print(list, func(w *tabwriter.Writer) {
+				if len(list) == 0 {
+					if p.PreviewsEnabled {
+						fmt.Fprintf(w, "No preview open for %s: the next pull request gets one.\n", p.Name)
+					} else {
+						fmt.Fprintf(w, "Preview environments are off for %s: `mw projects update %s --previews` turns them on.\n", p.Name, p.Name)
+					}
+					return
+				}
+				fmt.Fprintln(w, "PULL REQUEST\tBRANCH\tPROJECT\tADDRESSES")
+				for _, e := range list {
+					pr := e.Project.Preview
+					if pr == nil {
+						continue
+					}
+					var urls []string
+					for _, s := range e.Services {
+						if s.URL != nil {
+							urls = append(urls, *s.URL)
+						}
+					}
+					fmt.Fprintf(w, "#%d\t%s\t%s\t%s\n", pr.Number, pr.Branch, e.Project.Name, strings.Join(urls, ", "))
+				}
+			})
+		},
+	})
+
 	var confirm string
 	del := &cobra.Command{
 		Use:   "delete <project>",
-		Short: "Delete a project and its services (protection off, name confirmed)",
+		Short: "Delete a project: its services go; instances, databases and buckets only leave it",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			p, err := a.resolveProject(cmd.Context(), args[0])
@@ -188,10 +236,14 @@ func projectsCmd(a *App) *cobra.Command {
 				return err
 			}
 			if confirm != p.Name {
-				return fmt.Errorf("type the project's name to confirm: --confirm %s", p.Name)
+				return fmt.Errorf("deleting %s tears its serverless services down (its instances, databases and buckets stay, outside any project): confirm with --confirm %s", p.Name, p.Name)
+			}
+			base, err := a.projectsBase(cmd.Context())
+			if err != nil {
+				return err
 			}
 			c, _ := a.Client()
-			if err := c.Do(cmd.Context(), "DELETE", "/serverless/projects/"+p.ID, url.Values{"confirm": {confirm}}, nil, nil); err != nil {
+			if err := c.Do(cmd.Context(), "DELETE", base+"/"+p.ID, url.Values{"confirm": {confirm}}, nil, nil); err != nil {
 				return err
 			}
 			a.printf("Project %s is being deleted.\n", p.Name)
@@ -199,7 +251,7 @@ func projectsCmd(a *App) *cobra.Command {
 		},
 	}
 	del.Flags().StringVar(&confirm, "confirm", "", "the project's name, to confirm")
-	cmd.AddCommand(del)
+	cmd.AddCommand(del, projectResourcesCmd(a))
 	return cmd
 }
 
@@ -350,14 +402,19 @@ func servicesCmd(a *App) *cobra.Command {
 	cmd.AddCommand(create)
 
 	var protectService bool
+	var rolloutPercent, rolloutMinutes int
 	updateService := &cobra.Command{
-		Use:     "update <service>",
-		Short:   "Change a service's deletion protection",
-		Example: "  mw services update web --deletion-protection=true",
+		Use:   "update <service>",
+		Short: "Change a service's deletion protection, or how its new versions take traffic",
+		Long: "--rollout 10 makes a web or private service's new versions take 10% of the requests first,\n" +
+			"for --rollout-minutes (default 10), and all of them only if they stay healthy; 0 turns it off.\n" +
+			"It applies from the next deployment.",
+		Example: "  mw services update web --deletion-protection=true\n  mw services update web --rollout 10 --rollout-minutes 15",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if !cmd.Flags().Changed("deletion-protection") {
-				return errors.New("nothing to change: pass --deletion-protection")
+			rollout := cmd.Flags().Changed("rollout") || cmd.Flags().Changed("rollout-minutes")
+			if !cmd.Flags().Changed("deletion-protection") && !rollout {
+				return errors.New("nothing to change: pass --deletion-protection or --rollout")
 			}
 			s, err := a.resolveService(cmd.Context(), args[0], project)
 			if err != nil {
@@ -365,15 +422,49 @@ func servicesCmd(a *App) *cobra.Command {
 			}
 			c, _ := a.Client()
 			var out api.Service
-			if err := c.Do(cmd.Context(), "PUT", "/serverless/services/"+s.ID+"/deletion-protection", nil, map[string]bool{"enabled": protectService}, &out); err != nil {
-				return err
+			if cmd.Flags().Changed("deletion-protection") {
+				if err := c.Do(cmd.Context(), "PUT", "/serverless/services/"+s.ID+"/deletion-protection", nil, map[string]bool{"enabled": protectService}, &out); err != nil {
+					return err
+				}
+			}
+			if rollout {
+				settings := map[string]interface{}{}
+				if cmd.Flags().Changed("rollout") {
+					if rolloutPercent == 0 {
+						settings["rollout_percent"] = nil
+					} else {
+						settings["rollout_percent"] = rolloutPercent
+					}
+				}
+				if cmd.Flags().Changed("rollout-minutes") {
+					settings["rollout_minutes"] = rolloutMinutes
+				}
+				var saved struct {
+					Service api.Service `json:"service"`
+				}
+				if err := c.Do(cmd.Context(), "PATCH", "/serverless/services/"+s.ID+"/settings", nil,
+					map[string]interface{}{"settings": settings, "deploy": false}, &saved); err != nil {
+					return err
+				}
+				out = saved.Service
 			}
 			return a.print(out, func(w *tabwriter.Writer) {
-				fmt.Fprintf(w, "%s saved: deletion protection %s.\n", out.Name, onOff(out.DeletionProtect))
+				if cmd.Flags().Changed("deletion-protection") {
+					fmt.Fprintf(w, "%s saved: deletion protection %s.\n", out.Name, onOff(out.DeletionProtect))
+				}
+				if rollout {
+					if p := out.Settings.RolloutPercent; p != nil && *p > 0 {
+						fmt.Fprintf(w, "%s saved: new versions take %d%% of the requests for %d minutes first, from the next deployment.\n", out.Name, *p, out.Settings.RolloutMinutes)
+					} else {
+						fmt.Fprintf(w, "%s saved: new versions take every request at once.\n", out.Name)
+					}
+				}
 			})
 		},
 	}
 	updateService.Flags().BoolVar(&protectService, "deletion-protection", true, "protect it from deletion")
+	updateService.Flags().IntVar(&rolloutPercent, "rollout", 0, "web and private: a new version's first share of the requests, 1-50 (0: off)")
+	updateService.Flags().IntVar(&rolloutMinutes, "rollout-minutes", 10, "how long a gradual rollout lasts, 1-60")
 	updateService.Flags().StringVar(&project, "project", "", "the service's project, when its name repeats")
 	cmd.AddCommand(updateService)
 

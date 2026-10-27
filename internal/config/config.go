@@ -15,6 +15,10 @@ import (
 type Credentials struct {
 	APIURL string `json:"api_url,omitempty"`
 	Token  string `json:"token,omitempty"`
+	// Source is how the token came: "device" (`mw login`, a token of this
+	// computer's own, revoked on logout) or "token" (a pasted personal
+	// access token, maybe in use elsewhere too).
+	Source string `json:"source,omitempty"`
 }
 
 // Link ties a directory to a service.

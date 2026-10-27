@@ -677,6 +677,47 @@ func egressCmd(a *App) *cobra.Command {
 	}
 }
 
+// OutboundAddresses is GET /serverless/outbound-addresses.
+type OutboundAddresses struct {
+	Ranges      []string `json:"ranges"`
+	Addresses   []string `json:"addresses"`
+	AddressesV6 []string `json:"addresses_v6"`
+}
+
+func outboundCmd(a *App) *cobra.Command {
+	return &cobra.Command{
+		Use:     "outbound-ips",
+		Aliases: []string{"outbound"},
+		Short:   "The addresses your services reach the internet from, for allowlists",
+		Long: "Where your services call out from: what a bank, an ERP, a payment gateway or a database\n" +
+			"elsewhere puts on its IP allowlist. Allowlist the ranges: they do not change. The addresses\n" +
+			"in use now change when the platform replaces a node, always within the ranges.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			c, err := a.Client()
+			if err != nil {
+				return err
+			}
+			var o OutboundAddresses
+			if err := c.Do(cmd.Context(), "GET", "/serverless/outbound-addresses", nil, nil, &o); err != nil {
+				return err
+			}
+			return a.print(o, func(w *tabwriter.Writer) {
+				if len(o.Ranges) > 0 {
+					fmt.Fprintf(w, "Ranges (allowlist these)\t%s\n", strings.Join(o.Ranges, ", "))
+				}
+				now := append(append([]string{}, o.Addresses...), o.AddressesV6...)
+				if len(now) > 0 {
+					fmt.Fprintf(w, "In use now\t%s\n", strings.Join(now, ", "))
+				}
+				if len(o.Ranges) == 0 && len(now) == 0 {
+					fmt.Fprintln(w, "No outbound addresses are published yet.")
+				}
+			})
+		},
+	}
+}
+
 // egressLine is "180.2 GB of 250.0 GB included (72%)".
 func egressLine(e *api.Egress) string {
 	line := bytesText(e.UsedBytes)

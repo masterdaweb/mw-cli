@@ -4,7 +4,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -31,9 +30,19 @@ type App struct {
 	Err     io.Writer
 	Dir     string
 
-	JSON   bool
-	apiURL string
-	token  string
+	// JSON is machine-readable output (-o json or -o yaml, or --json):
+	// standard output is the answer alone, prompts and progress go elsewhere.
+	JSON bool
+	// Output is table, json or yaml.
+	Output string
+	// NoHeaders drops a list's header line; Quiet prints its ids alone.
+	NoHeaders bool
+	Quiet     bool
+	apiURL    string
+	token     string
+	// projectsPath is where projects live on this API: /projects, or the
+	// older /serverless/projects (found on first use).
+	projectsPath string
 	// dbDirect: database clients connect to the database's address (which
 	// must allow this computer's), not through the platform's tunnel.
 	dbDirect bool
@@ -44,13 +53,24 @@ type App struct {
 // NewRoot builds the command tree.
 func NewRoot(a *App) *cobra.Command {
 	root := &cobra.Command{
-		Use:           "mw",
-		Short:         "Master da Web from the terminal: serverless apps, databases and storage",
+		Use:   "mw",
+		Short: "Master da Web from the terminal: VPS instances, serverless apps, databases, storage and network",
+		Long: "Master da Web from the terminal — everything the console does, through the public API:\n" +
+			"VPS instances, snapshots and backups, firewalls, VPCs and DNS, serverless apps, databases,\n" +
+			"Object Storage, projects and billing.\n\n" +
+			"Sign in with `mw login` (or set MW_TOKEN in CI). Every list prints a table, or JSON / YAML\n" +
+			"with -o json|yaml; -q prints the ids alone, for pipes.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       a.Version,
+		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
+			return a.setOutput()
+		},
 	}
-	root.PersistentFlags().BoolVar(&a.JSON, "json", false, "print JSON (for scripts) instead of tables")
+	root.PersistentFlags().StringVarP(&a.Output, "output", "o", outputTable, "output format: table, json or yaml")
+	root.PersistentFlags().BoolVar(&a.JSON, "json", false, "print JSON (for scripts) instead of tables: the same as -o json")
+	root.PersistentFlags().BoolVar(&a.NoHeaders, "no-headers", false, "lists: leave out the header line")
+	root.PersistentFlags().BoolVarP(&a.Quiet, "quiet", "q", false, "lists: print the ids alone, one per line")
 	root.PersistentFlags().StringVar(&a.apiURL, "api-url", "", "the API to talk to (default: the one you signed in to, or "+api.DefaultBaseURL+")")
 	root.PersistentFlags().StringVar(&a.token, "token", "", "an API token for this command only (default: the signed-in one, or MW_TOKEN)")
 	root.AddCommand(
@@ -61,8 +81,19 @@ func NewRoot(a *App) *cobra.Command {
 		dbCmd(a, "db", ""), dbCmd(a, "redis", "valkey"),
 		storageCmd(a), walletCmd(a), usageCmd(a), templatesCmd(a), launchCmd(a),
 		groupsCmd(a), registryCmd(a),
-		metricsCmd(a), alertsCmd(a), egressCmd(a), webhooksCmd(a),
+		metricsCmd(a), alertsCmd(a), egressCmd(a), outboundCmd(a), drainsCmd(a), webhooksCmd(a),
+		// Infrastructure: VPS instances and what surrounds them.
+		instancesCmd(a), snapshotsCmd(a), backupsCmd(a), sshKeysCmd(a),
+		regionsCmd(a), plansCmd(a), imagesCmd(a), customImagesCmd(a), addonsCmd(a), ordersCmd(a), operationsCmd(a),
+		firewallsCmd(a), vpcsCmd(a), vpnCmd(a), dnsCmd(a), rdnsCmd(a),
+		securityCmd(a),
+		subscriptionsCmd(a), invoicesCmd(a),
+		activityCmd(a), versionCmd(a),
 	)
+	addGroups(root)
+	// Help and completion scripts go where the rest of the output goes.
+	root.SetOut(a.Out)
+	root.SetErr(a.Err)
 	return root
 }
 
@@ -99,15 +130,15 @@ func firstNonEmpty(v ...string) string {
 	return ""
 }
 
-// print writes v as JSON with --json, else the table.
+// print writes v as JSON or YAML with -o json|yaml, else the table.
 func (a *App) print(v interface{}, table func(w *tabwriter.Writer)) error {
 	if a.JSON {
-		enc := json.NewEncoder(a.Out)
-		enc.SetIndent("", "  ")
-		return enc.Encode(v)
+		return a.encode(v)
 	}
 	w := tabwriter.NewWriter(a.Out, 0, 4, 2, ' ', 0)
-	table(w)
+	if table != nil {
+		table(w)
+	}
 	return w.Flush()
 }
 
@@ -212,6 +243,21 @@ func Describe(err error) string {
 	switch {
 	case p.Code == "insufficient_scope":
 		msg += "\n  The token cannot do this. Create one with that scope under Settings → API tokens, then `mw login`."
+	case p.Reason == "VM_OPERATION_IN_PROGRESS":
+		msg += "\n  " + busyHint(problemInstance(p))
+	case p.Reason == "VPN_GATEWAY_REBUILD_REQUIRED":
+		msg += "\n  Applying it rebuilds the gateway (a few minutes offline): `mw vpn apply <gateway> --rebuild` goes ahead."
+	case p.Reason == "SECURITY_ACCOUNT_OPTED_OUT":
+		msg += "\n  `mw security settings set --scanning on` turns scanning back on."
+	case p.Reason == "SECURITY_INSTANCE_OPTED_OUT":
+		msg += fmt.Sprintf("\n  `mw instances security %s --enable` turns it back on.", firstNonEmpty(problemInstance(p), "<instance>"))
+	case p.Reason == "INSTANCE_NOT_RUNNING":
+		msg += fmt.Sprintf("\n  Start it first: `mw instances start %s --wait`.", firstNonEmpty(problemInstance(p), "<instance>"))
+	case p.Reason == "INSTANCE_IN_RESCUE":
+		msg += fmt.Sprintf("\n  It is in rescue mode: leave it first with `mw instances rescue exit %s`.", firstNonEmpty(problemInstance(p), "<instance>"))
+	case p.Code == "insufficient_balance" && p.SubscriptionID != "":
+		line := topUpLine(p.SubscriptionID, p.ShortfallCents.String())
+		msg += "\n  " + strings.ToUpper(line[:1]) + line[1:] + "."
 	case strings.HasSuffix(p.Reason, "_CREDIT_REQUIRED") || p.Code == "insufficient_balance":
 		msg += "\n  Add credit to your wallet in the console (Credits & Plans); `mw wallet` shows what is there."
 	case p.Reason == "SERVERLESS_NOT_ENABLED":
@@ -219,10 +265,37 @@ func Describe(err error) string {
 	case p.Reason == "SERVERLESS_QUOTA_EXCEEDED":
 		msg += quotaHint(p.Params)
 	}
+	for _, fe := range p.Errors {
+		why := strings.Join(fe.Issues, "; ")
+		if why == "" {
+			why = firstNonEmpty(fe.Message, fe.Code)
+		}
+		msg += fmt.Sprintf("\n  %s: %s", fe.Field, why)
+	}
 	if p.RequestID != "" {
 		msg += fmt.Sprintf("\n  (request %s)", p.RequestID)
 	}
 	return msg
+}
+
+// busyHint is what to do when another operation holds an instance.
+func busyHint(instance string) string {
+	list := "`mw operations --status active`"
+	if instance != "" {
+		list = fmt.Sprintf("`mw operations --resource-type instance --resource-id %s --status active`", instance)
+	}
+	return "Another operation is running on this instance: " + list + " shows it. Run this again once it ends " +
+		"(`mw operations wait <id>` waits for it; --wait on the command that started it does too)."
+}
+
+var problemInstanceRe = regexp.MustCompile(`^/v1/instances/(\d+)(/|$)`)
+
+// problemInstance is the instance a failed request was about, from its path.
+func problemInstance(p *api.Problem) string {
+	if m := problemInstanceRe.FindStringSubmatch(p.Instance); m != nil {
+		return m[1]
+	}
+	return ""
 }
 
 // quotaHint says, for each account limit a change passes, what is free and

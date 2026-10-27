@@ -259,3 +259,58 @@ func TestEgressSaysWhatWasSentOfWhatIsIncluded(t *testing.T) {
 		t.Fatalf("egress: %v %q", err, out)
 	}
 }
+
+func TestOutboundIPsListsTheRangesToAllowlist(t *testing.T) {
+	f, srv := newFakeAPI(t)
+	f.answer("GET /v1/serverless/outbound-addresses", 200, map[string]interface{}{
+		"ranges": []string{"148.224.62.0/27"}, "addresses": []string{"148.224.62.5", "148.224.62.23"}, "addresses_v6": []string{},
+	})
+	out, _, err := run(t, srv, t.TempDir(), "outbound-ips")
+	if err != nil || !strings.Contains(out, "148.224.62.0/27") || !strings.Contains(out, "148.224.62.5, 148.224.62.23") {
+		t.Fatalf("outbound-ips: %v %q", err, out)
+	}
+	f.answer("GET /v1/serverless/outbound-addresses", 200, map[string]interface{}{"ranges": []string{}, "addresses": []string{}, "addresses_v6": []string{}})
+	if out, _, err := run(t, srv, t.TempDir(), "outbound"); err != nil || !strings.Contains(out, "No outbound addresses are published yet") {
+		t.Fatalf("empty: %v %q", err, out)
+	}
+}
+
+func TestDrainsAddTestTurnOffAndRemove(t *testing.T) {
+	f, srv := newFakeAPI(t)
+	const projID = "0193f0e2-2222-7000-8000-000000000002"
+	const drainID = "0193f0e2-3333-7000-8000-000000000003"
+	f.answer("GET /v1/serverless/projects/"+projID, 200, map[string]interface{}{"id": projID, "name": "loja"})
+	drain := map[string]interface{}{"id": drainID, "project_id": projID, "kind": "DATADOG", "url": "https://http-intake.logs.datadoghq.eu/…logs", "enabled": true, "status": "ok", "has_token": true, "consecutive_failures": 0, "lines_sent": "1200", "last_sent_at": "2026-10-26T10:00:00Z", "created_at": "2026-10-26T09:00:00Z"}
+	f.answer("POST /v1/serverless/projects/"+projID+"/log-drains", 200, drain)
+	out, _, err := run(t, srv, t.TempDir(), "drains", "add", "--project", projID, "--datadog", "--site", "eu1", "--token", "ddkey")
+	if err != nil || !strings.Contains(out, "Sending loja's logs to Datadog from now on") {
+		t.Fatalf("add: %v %q", err, out)
+	}
+	if body := jsonOf(t, f.last("POST /v1/serverless/projects/"+projID+"/log-drains").Body); body["kind"] != "DATADOG" || body["site"] != "eu1" || body["token"] != "ddkey" {
+		t.Fatalf("add sent %v", body)
+	}
+	f.answer("GET /v1/serverless/projects/"+projID+"/log-drains", 200, []interface{}{drain})
+	if out, _, err := run(t, srv, t.TempDir(), "drains", "--project", projID); err != nil || !strings.Contains(out, "Datadog") || !strings.Contains(out, "1200") {
+		t.Fatalf("list: %v %q", err, out)
+	}
+	f.answer("POST /v1/serverless/log-drains/"+drainID+"/test", 200, map[string]interface{}{"ok": false, "status": 403, "error": "answered 403: Forbidden"})
+	if _, _, err := run(t, srv, t.TempDir(), "drains", "test", "0193f0e2-3333", "--project", projID); err == nil || !strings.Contains(err.Error(), "refused the test line: answered 403") {
+		t.Fatalf("test: %v", err)
+	}
+	off := map[string]interface{}{}
+	for k, v := range drain {
+		off[k] = v
+	}
+	off["enabled"], off["status"] = false, "off"
+	f.answer("PATCH /v1/serverless/log-drains/"+drainID, 200, off)
+	if out, _, err := run(t, srv, t.TempDir(), "drains", "off", "0193f0e2-3333", "--project", projID); err != nil || !strings.Contains(out, "Datadog: off") {
+		t.Fatalf("off: %v %q", err, out)
+	}
+	f.answer("DELETE /v1/serverless/log-drains/"+drainID, 204, nil)
+	if out, _, err := run(t, srv, t.TempDir(), "drains", "remove", "0193f0e2-3333", "--project", projID); err != nil || !strings.Contains(out, "Logs no longer go to Datadog") {
+		t.Fatalf("remove: %v %q", err, out)
+	}
+	if _, _, err := run(t, srv, t.TempDir(), "drains", "add", "--project", projID); err == nil || !strings.Contains(err.Error(), "--url") {
+		t.Fatalf("add without a destination: %v", err)
+	}
+}

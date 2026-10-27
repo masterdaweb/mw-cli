@@ -16,16 +16,45 @@ type Me struct {
 }
 
 type Project struct {
-	ID                 string `json:"id"`
-	Name               string `json:"name"`
-	Region             string `json:"region"`
-	DeletionProtection bool   `json:"deletion_protection"`
-	DeploysFrozen      bool   `json:"deploys_frozen"`
-	Paused             bool   `json:"paused"`
-	ServiceCount       int    `json:"service_count"`
-	LiveCount          int    `json:"live_count"`
-	FailedCount        int    `json:"failed_count"`
-	CreatedAt          string `json:"created_at"`
+	ID                 string  `json:"id"`
+	Name               string  `json:"name"`
+	Description        *string `json:"description"`
+	Region             string  `json:"region"`
+	Deleting           bool    `json:"deleting"`
+	DeletionProtection bool    `json:"deletion_protection"`
+	DeploysFrozen      bool    `json:"deploys_frozen"`
+	Paused             bool    `json:"paused"`
+	// PreviewsEnabled: each pull request against a branch it deploys gets a copy.
+	PreviewsEnabled bool            `json:"previews_enabled"`
+	Preview         *ProjectPreview `json:"preview"`
+	ServiceCount    int             `json:"service_count"`
+	LiveCount       int             `json:"live_count"`
+	FailedCount     int             `json:"failed_count"`
+	// What else it groups: instances (VPS), databases and buckets.
+	InstanceCount int    `json:"instance_count"`
+	DatabaseCount int    `json:"database_count"`
+	BucketCount   int    `json:"bucket_count"`
+	CreatedAt     string `json:"created_at"`
+}
+
+// ProjectPreview: this project is a pull request's preview environment.
+type ProjectPreview struct {
+	OfProjectID *string `json:"of_project_id"`
+	Number      int     `json:"number"`
+	Title       *string `json:"title"`
+	URL         *string `json:"url"`
+	Branch      string  `json:"branch"`
+}
+
+// PreviewEnvironment is one open pull request's copy of a project.
+type PreviewEnvironment struct {
+	Project  Project `json:"project"`
+	Services []struct {
+		Name   string  `json:"name"`
+		Kind   string  `json:"kind"`
+		Status string  `json:"status"`
+		URL    *string `json:"url"`
+	} `json:"services"`
 }
 
 type ServiceSettings struct {
@@ -40,6 +69,9 @@ type ServiceSettings struct {
 	Concurrency    int     `json:"concurrency"`
 	Instances      int     `json:"instances"`
 	CronSchedule   *string `json:"cron_schedule"`
+	// RolloutPercent: a new version's first share of the requests; nil, all at once.
+	RolloutPercent *int `json:"rollout_percent"`
+	RolloutMinutes int  `json:"rollout_minutes"`
 }
 
 type DeploymentSummary struct {
@@ -118,9 +150,28 @@ type Deployment struct {
 	ImageRef      *string            `json:"image_ref"`
 	RevisionID    *string            `json:"revision_id"`
 	Failure       *DeploymentFailure `json:"failure"`
+	Rollout       *DeploymentRollout `json:"rollout"`
 	Steps         []DeploymentStep   `json:"steps"`
 	CreatedAt     string             `json:"created_at"`
 	FinishedAt    *string            `json:"finished_at"`
+}
+
+// DeploymentRollout: a gradual rollout — the share of the requests the new
+// version took, until when (still, while the deployment is DEPLOYING).
+type DeploymentRollout struct {
+	Percent       int     `json:"percent"`
+	StartedAt     string  `json:"started_at"`
+	Until         string  `json:"until"`
+	PendingAction *string `json:"pending_action"`
+}
+
+// BuildLog is what a deployment's build printed: `running` (its last lines
+// so far), `complete` (kept), or `none`.
+type BuildLog struct {
+	DeploymentID string `json:"deployment_id"`
+	State        string `json:"state"`
+	Log          string `json:"log"`
+	Truncated    bool   `json:"truncated"`
 }
 
 type Revision struct {
