@@ -35,3 +35,28 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+
+  # npm: the package is staged through Trusted Publishing (OIDC, no token,
+  # provenance attached); a maintainer approves it on npmjs.com → Staged
+  # Packages (2FA) before it goes live. Its version is the tag's, so it
+  # fetches the binaries the job above just released.
+  npm:
+    needs: goreleaser
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      # `npm stage publish` needs npm 11.15 or newer.
+      - run: npm install -g npm@latest && npm --version
+      - name: Version from the tag
+        working-directory: npm
+        run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
+      - name: Stage the release for approval
+        working-directory: npm
+        run: npm stage publish
