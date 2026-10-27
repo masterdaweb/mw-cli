@@ -82,7 +82,12 @@ brews:
     repository:
       owner: masterdaweb
       name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+      branch: main
+      # A deploy key with write access to the tap alone (secret
+      # HOMEBREW_TAP_DEPLOY_KEY), not a personal token.
+      git:
+        url: "git@github.com:masterdaweb/homebrew-tap.git"
+        private_key: "{{ .Env.HOMEBREW_TAP_DEPLOY_KEY }}"
     directory: Formula
     homepage: https://www.masterdaweb.com
     description: Master da Web from the terminal — VPS instances, serverless apps, databases, storage and network
