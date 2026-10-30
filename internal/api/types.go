@@ -16,14 +16,16 @@ type Me struct {
 }
 
 type Project struct {
-	ID                 string  `json:"id"`
-	Name               string  `json:"name"`
-	Description        *string `json:"description"`
-	Region             string  `json:"region"`
-	Deleting           bool    `json:"deleting"`
-	DeletionProtection bool    `json:"deletion_protection"`
-	DeploysFrozen      bool    `json:"deploys_frozen"`
-	Paused             bool    `json:"paused"`
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	Description *string `json:"description"`
+	Region      string  `json:"region"`
+	// DatacenterID is where it runs, for good: a region's id (`mw regions`).
+	DatacenterID       *int64 `json:"datacenter_id"`
+	Deleting           bool   `json:"deleting"`
+	DeletionProtection bool   `json:"deletion_protection"`
+	DeploysFrozen      bool   `json:"deploys_frozen"`
+	Paused             bool   `json:"paused"`
 	// PreviewsEnabled: each pull request against a branch it deploys gets a copy.
 	PreviewsEnabled bool            `json:"previews_enabled"`
 	Preview         *ProjectPreview `json:"preview"`
@@ -72,6 +74,9 @@ type ServiceSettings struct {
 	// RolloutPercent: a new version's first share of the requests; nil, all at once.
 	RolloutPercent *int `json:"rollout_percent"`
 	RolloutMinutes int  `json:"rollout_minutes"`
+	// The persistent volume: where it is mounted and its size; nil, none.
+	VolumeMountPath *string `json:"volume_mount_path"`
+	VolumeSizeGB    *int    `json:"volume_size_gb"`
 }
 
 type DeploymentSummary struct {
@@ -123,7 +128,62 @@ type Service struct {
 	ReadyInstances  int                `json:"ready_instances"`
 	LastDeployment  *DeploymentSummary `json:"last_deployment"`
 	DeletionProtect bool               `json:"deletion_protection"`
-	CreatedAt       string             `json:"created_at"`
+	// VolumeUsage: how full the volume was when last measured; nil, not yet.
+	VolumeUsage *VolumeUsage `json:"volume_usage"`
+	// ImageVolumes: the paths its image keeps data in (its VOLUME lines).
+	ImageVolumes []string `json:"image_volumes"`
+	CreatedAt    string   `json:"created_at"`
+}
+
+// VolumeUsage is a volume's file system: bytes used and its size, decimal strings.
+type VolumeUsage struct {
+	UsedBytes     string `json:"used_bytes"`
+	CapacityBytes string `json:"capacity_bytes"`
+	MeasuredAt    string `json:"measured_at"`
+}
+
+// VolumeBackup is one backup of a service's volume. Kind is DAILY (kept 7
+// days), MANUAL (kept until deleted), BEFORE_RESTORE (what a restore
+// replaced) or FINAL (made when the volume went); ExpiresAt nil, kept until
+// deleted.
+type VolumeBackup struct {
+	ID           string  `json:"id"`
+	ServiceID    string  `json:"service_id"`
+	ServiceName  string  `json:"service_name"`
+	Kind         string  `json:"kind"`
+	Status       string  `json:"status"`
+	MountPath    string  `json:"mount_path"`
+	VolumeSizeGB int     `json:"volume_size_gb"`
+	SizeBytes    *string `json:"size_bytes"`
+	RequestedBy  *string `json:"requested_by"`
+	CreatedAt    string  `json:"created_at"`
+	CompletedAt  *string `json:"completed_at"`
+	ExpiresAt    *string `json:"expires_at"`
+	Restorable   bool    `json:"restorable"`
+}
+
+// VolumeEntry is one file or folder: Type is file, dir, link or other.
+type VolumeEntry struct {
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	SizeBytes  int64  `json:"size_bytes"`
+	ModifiedAt string `json:"modified_at"`
+}
+
+// VolumeFiles is a folder of a volume ("" is its root); Truncated, it holds
+// more than is listed.
+type VolumeFiles struct {
+	Path      string        `json:"path"`
+	Entries   []VolumeEntry `json:"entries"`
+	Truncated bool          `json:"truncated"`
+}
+
+// ImageInspection is what an image says of itself: the ports it exposes, the
+// paths it keeps data in, and the user it runs as (nil: root).
+type ImageInspection struct {
+	Ports   []int    `json:"ports"`
+	Volumes []string `json:"volumes"`
+	User    *string  `json:"user"`
 }
 
 type DeploymentFailure struct {
@@ -433,29 +493,31 @@ type DatabaseExportLink struct {
 }
 
 type Database struct {
-	ID                 string               `json:"id"`
-	Name               string               `json:"name"`
-	Engine             string               `json:"engine"`
-	Version            Series               `json:"version"`
-	Size               DatabaseSize         `json:"size"`
-	Status             string               `json:"status"`
-	Failure            *string              `json:"failure"`
-	ChangesPending     bool                 `json:"changes_pending"`
-	Connection         DatabaseConnection   `json:"connection"`
-	AllowedCIDRs       []string             `json:"allowed_cidrs"`
-	Extensions         []string             `json:"extensions"`
-	EvictionPolicy     *string              `json:"eviction_policy"`
-	BackupsEnabled     bool                 `json:"backups_enabled"`
-	DeletionProtection bool                 `json:"deletion_protection"`
-	ProjectID          *string              `json:"project_id"`
-	Health             DatabaseHealth       `json:"health"`
-	Backups            *DatabaseBackups     `json:"backups"`
-	Notice             *string              `json:"notice"`
-	Restore            *DatabaseRestore     `json:"restore"`
-	Hibernation        *DatabaseHibernation `json:"hibernation"`
-	Maintenance        DatabaseMaintenance  `json:"maintenance"`
-	Disk               DatabaseDisk         `json:"disk"`
-	Services           []struct {
+	ID                 string             `json:"id"`
+	Name               string             `json:"name"`
+	Engine             string             `json:"engine"`
+	Version            Series             `json:"version"`
+	Size               DatabaseSize       `json:"size"`
+	Status             string             `json:"status"`
+	Failure            *string            `json:"failure"`
+	ChangesPending     bool               `json:"changes_pending"`
+	Connection         DatabaseConnection `json:"connection"`
+	AllowedCIDRs       []string           `json:"allowed_cidrs"`
+	Extensions         []string           `json:"extensions"`
+	EvictionPolicy     *string            `json:"eviction_policy"`
+	BackupsEnabled     bool               `json:"backups_enabled"`
+	DeletionProtection bool               `json:"deletion_protection"`
+	ProjectID          *string            `json:"project_id"`
+	// DatacenterID is where it runs, for good: a region's id (`mw regions`).
+	DatacenterID *int64               `json:"datacenter_id"`
+	Health       DatabaseHealth       `json:"health"`
+	Backups      *DatabaseBackups     `json:"backups"`
+	Notice       *string              `json:"notice"`
+	Restore      *DatabaseRestore     `json:"restore"`
+	Hibernation  *DatabaseHibernation `json:"hibernation"`
+	Maintenance  DatabaseMaintenance  `json:"maintenance"`
+	Disk         DatabaseDisk         `json:"disk"`
+	Services     []struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
 	} `json:"services"`

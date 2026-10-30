@@ -77,7 +77,7 @@ func NewRoot(a *App) *cobra.Command {
 		loginCmd(a), logoutCmd(a), whoamiCmd(a),
 		projectsCmd(a), servicesCmd(a), initCmd(a), linkCmd(a), statusCmd(a),
 		deployCmd(a), redeployCmd(a), restartCmd(a), rollbackCmd(a), deploymentsCmd(a), logsCmd(a), scaleCmd(a), runCmd(a),
-		envCmd(a), domainsCmd(a), bindingsCmd(a),
+		envCmd(a), domainsCmd(a), bindingsCmd(a), volumeCmd(a),
 		dbCmd(a, "db", ""), dbCmd(a, "redis", "valkey"),
 		storageCmd(a), walletCmd(a), usageCmd(a), templatesCmd(a), launchCmd(a),
 		groupsCmd(a), registryCmd(a),
@@ -264,6 +264,12 @@ func Describe(err error) string {
 		msg += "\n  Serverless is in beta: ask for access in the console."
 	case p.Reason == "SERVERLESS_QUOTA_EXCEEDED":
 		msg += quotaHint(p.Params)
+	case p.Reason == "SERVERLESS_VOLUME_BACKUP_LIMIT":
+		msg += "\n  `mw volume backups` lists them; `mw volume backups delete <id>` deletes one."
+	case p.Reason == "SERVERLESS_VOLUME_FULL":
+		msg += "\n  `mw volume grow --size <GB>` makes the volume bigger, at once and without a restart."
+	case p.Reason == "SERVERLESS_VOLUME_INSTANCE_FAILING":
+		msg += "\n  `mw projects pause <project>` frees the volume for its files (`mw projects resume <project>` after); `mw volume restore` puts a backup back."
 	}
 	for _, fe := range p.Errors {
 		why := strings.Join(fe.Issues, "; ")

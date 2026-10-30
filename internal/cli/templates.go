@@ -106,13 +106,13 @@ func templatesCmd(a *App) *cobra.Command {
 		},
 	}
 
-	var name string
+	var name, location string
 	var answers []string
 	var detach bool
 	deploy := &cobra.Command{
 		Use:     "deploy <template>",
 		Short:   "Deploy a template as a new project, and follow it until it is live",
-		Example: "  mw templates deploy laravel --name loja\n  mw templates deploy directus --name cms --answer ADMIN_EMAIL=ana@loja.com.br --answer ADMIN_PASSWORD=…",
+		Example: "  mw templates deploy laravel --name loja\n  mw templates deploy laravel --name loja-us --location dallas\n  mw templates deploy directus --name cms --answer ADMIN_EMAIL=ana@loja.com.br --answer ADMIN_PASSWORD=…",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if strings.TrimSpace(name) == "" {
@@ -132,6 +132,13 @@ func templatesCmd(a *App) *cobra.Command {
 			}
 			var r api.TemplateDeployResult
 			body := map[string]interface{}{"project_name": name, "answers": given}
+			if location != "" {
+				id, err := a.resolveLocation(cmd.Context(), appLocations, "projects", location)
+				if err != nil {
+					return err
+				}
+				body["datacenter_id"] = id
+			}
 			if err := c.Do(cmd.Context(), "POST", "/serverless/templates/"+args[0]+"/deploy", nil, body, &r); err != nil {
 				return err
 			}
@@ -139,6 +146,7 @@ func templatesCmd(a *App) *cobra.Command {
 		},
 	}
 	deploy.Flags().StringVar(&name, "name", "", "the new project's name")
+	deploy.Flags().StringVar(&location, "location", "", locationFlag)
 	deploy.Flags().StringArrayVar(&answers, "answer", nil, "an answer to the template's question, KEY=VALUE (repeatable)")
 	deploy.Flags().BoolVar(&detach, "detach", false, "return once the project is made, without following the deployments")
 

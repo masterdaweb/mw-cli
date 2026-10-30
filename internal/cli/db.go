@@ -73,11 +73,16 @@ func dbCmd(a *App, use, engine string) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			ids := make([]*int64, len(all))
+			for i := range all {
+				ids[i] = all[i].DatacenterID
+			}
+			names := a.locationNames(cmd.Context(), ids...)
 			return a.print(all, func(w *tabwriter.Writer) {
-				fmt.Fprintln(w, "NAME\tENGINE\tSIZE\tSTATUS\tTHIS MONTH")
+				fmt.Fprintln(w, "NAME\tENGINE\tSIZE\tLOCATION\tSTATUS\tTHIS MONTH")
 				for _, d := range all {
-					fmt.Fprintf(w, "%s\t%s %s\t%s\t%s\t%s\n", d.Name, engineName(d.Engine), d.Version,
-						dbSizeText(d.Size), dbStatus(d.Status), money(d.Cost.MonthToDateMicroCents, 2))
+					fmt.Fprintf(w, "%s\t%s %s\t%s\t%s\t%s\t%s\n", d.Name, engineName(d.Engine), d.Version,
+						dbSizeText(d.Size), locationText(names, d.DatacenterID), dbStatus(d.Status), money(d.Cost.MonthToDateMicroCents, 2))
 				}
 			})
 		},
@@ -208,7 +213,7 @@ func dbSizesCmd(a *App, engine string) *cobra.Command {
 }
 
 func dbCreateCmd(a *App, engine, kind string) *cobra.Command {
-	var size, project, eviction, version string
+	var size, project, eviction, version, location string
 	var allow, extensions []string
 	var noBackups, noProtection, detach bool
 	cmd := &cobra.Command{
@@ -257,6 +262,14 @@ func dbCreateCmd(a *App, engine, kind string) *cobra.Command {
 				}
 				body["project_id"] = p.ID
 			}
+			// In a project it runs in the project's location: one named must be the same.
+			if location != "" {
+				id, err := a.resolveLocation(cmd.Context(), dbLocations, "databases", location)
+				if err != nil {
+					return err
+				}
+				body["datacenter_id"] = id
+			}
 			if len(allow) > 0 {
 				body["allowed_cidrs"] = allow
 			}
@@ -294,7 +307,8 @@ func dbCreateCmd(a *App, engine, kind string) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&size, "size", "", "a size from `sizes` (default: the smallest)")
 	cmd.Flags().StringVar(&version, "version", "", "a release series from `sizes`, e.g. 18 or 11.4 (default: the newest)")
-	cmd.Flags().StringVar(&project, "project", "", "the project it belongs to")
+	cmd.Flags().StringVar(&project, "project", "", "the project it belongs to (it then runs in the project's location)")
+	cmd.Flags().StringVar(&location, "location", "", locationFlag+"; default: its project's, or the platform's")
 	cmd.Flags().StringArrayVar(&allow, "allow", nil, "an address or CIDR allowed to connect, besides your services (repeat)")
 	if engine != "valkey" {
 		cmd.Flags().StringArrayVar(&extensions, "extension", nil, "a PostgreSQL extension to enable, e.g. vector (repeat)")
@@ -388,6 +402,7 @@ func dbGetCmd(a *App, engine string) *cobra.Command {
 					fmt.Fprintf(w, "Restored from\t%s, to %s (%s)\n", str(r.SourceName), target, state)
 				}
 				fmt.Fprintf(w, "Size\t%s (%s)\n", dbSizeText(d.Size), d.Size.Code)
+				fmt.Fprintf(w, "Location\t%s\n", locationText(a.locationNames(cmd.Context(), d.DatacenterID), d.DatacenterID))
 				fmt.Fprintf(w, "Host\t%s\n", d.Connection.Host)
 				if d.Connection.PoolerPort != nil {
 					fmt.Fprintf(w, "Ports\t%d (pooler, for apps) · %d (direct, for migrations)\n", *d.Connection.PoolerPort, d.Connection.Port)

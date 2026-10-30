@@ -17,6 +17,8 @@ func TestOutputFormats(t *testing.T) {
 	f.answer("GET /v1/regions", 200, page(
 		map[string]interface{}{"id": "3", "name": "Belo Horizonte", "region_name": "br-bh", "available": true, "ipv4_available": true, "ipv6_available": false},
 	))
+	f.answer("GET /v1/serverless/locations", 200, []interface{}{})
+	f.answer("GET /v1/databases/locations", 200, []interface{}{})
 	// YAML keeps the API's field order.
 	out, _, err := run(t, srv, t.TempDir(), "regions", "-o", "yaml")
 	if err != nil {

@@ -73,7 +73,7 @@ func pointText(p api.DatabaseRestorePoint) string {
 }
 
 func dbRestoreCmd(a *App) *cobra.Command {
-	var to, at, point, size string
+	var to, at, point, size, location string
 	var detach bool
 	cmd := &cobra.Command{
 		Use:   "restore <name> --to <new-name>",
@@ -84,7 +84,8 @@ func dbRestoreCmd(a *App) *cobra.Command {
 			"address and owner password, the same database and user names; your services keep\n" +
 			"using the original until you switch them (the console's restored database page).",
 		Example: "  mw db restore loja-prod --to loja-ontem --time 2026-10-24T18:30:00-03:00\n" +
-			"  mw db restore loja-prod --to loja-antes --point deploy-web-12",
+			"  mw db restore loja-prod --to loja-antes --point deploy-web-12\n" +
+			"  mw db restore loja-prod --to loja-us --location dallas",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if to == "" {
@@ -106,6 +107,14 @@ func dbRestoreCmd(a *App) *cobra.Command {
 			}
 			if size != "" {
 				body["size"] = size
+			}
+			// Default: where the original runs.
+			if location != "" {
+				id, err := a.resolveLocation(cmd.Context(), dbLocations, "databases", location)
+				if err != nil {
+					return err
+				}
+				body["datacenter_id"] = id
 			}
 			c, _ := a.Client()
 			var made api.CreatedDatabase
@@ -132,6 +141,7 @@ func dbRestoreCmd(a *App) *cobra.Command {
 	cmd.Flags().StringVar(&at, "time", "", "an instant inside the backups' window (RFC 3339, with its zone)")
 	cmd.Flags().StringVar(&point, "point", "", "a restore point's name (see `restore-points`)")
 	cmd.Flags().StringVar(&size, "size", "", "a size of the same engine (default: the original's)")
+	cmd.Flags().StringVar(&location, "location", "", "where the new database runs: a location's id, name or code (default: the original's; `mw regions`)")
 	cmd.Flags().BoolVar(&detach, "detach", false, "do not wait for it to be ready")
 	return cmd
 }

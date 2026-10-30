@@ -13,9 +13,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -116,20 +118,26 @@ func (c *Client) Do(ctx context.Context, method, path string, query url.Values, 
 			return err
 		}
 	}
-	return c.send(ctx, c.HTTP, method, path, query, out, func() (io.Reader, int64, string, func(), error) {
+	return c.send(ctx, c.HTTP, method, path, query, func() (io.Reader, int64, string, func(), error) {
 		if in == nil {
 			return nil, 0, "", func() {}, nil
 		}
 		return bytes.NewReader(raw), int64(len(raw)), "application/json", func() {}, nil
-	})
+	}, func(res *http.Response) error { return c.answer(res, out) })
 }
 
 // Upload sends a file as the raw body of a POST (a folder's .tar.gz). It may
 // take long on a slow link: only ctx bounds it, not the client's timeout.
 func (c *Client) Upload(ctx context.Context, path string, query url.Values, file string, contentType string, out interface{}) error {
+	return c.SendFile(ctx, http.MethodPost, path, query, file, contentType, out)
+}
+
+// SendFile is Upload with another method: a file PUT into a volume, read
+// from the disk as it goes, with its length.
+func (c *Client) SendFile(ctx context.Context, method, path string, query url.Values, file string, contentType string, out interface{}) error {
 	long := *c.HTTP
 	long.Timeout = 0
-	return c.send(ctx, &long, http.MethodPost, path, query, out, func() (io.Reader, int64, string, func(), error) {
+	return c.send(ctx, &long, method, path, query, func() (io.Reader, int64, string, func(), error) {
 		f, err := os.Open(file)
 		if err != nil {
 			return nil, 0, "", nil, err
@@ -140,7 +148,44 @@ func (c *Client) Upload(ctx context.Context, path string, query url.Values, file
 			return nil, 0, "", nil, err
 		}
 		return f, st.Size(), contentType, func() { f.Close() }, nil
+	}, func(res *http.Response) error { return c.answer(res, out) })
+}
+
+// Download writes the body of a GET to w as it comes (a volume's .tar.gz) and
+// returns the name the API gives the file (Content-Disposition), "" without
+// one. Like Upload, only ctx bounds it; a refusal is read as any other.
+func (c *Client) Download(ctx context.Context, path string, query url.Values, w io.Writer) (string, error) {
+	long := *c.HTTP
+	long.Timeout = 0
+	name := ""
+	err := c.send(ctx, &long, http.MethodGet, path, query, func() (io.Reader, int64, string, func(), error) {
+		return nil, 0, "", func() {}, nil
+	}, func(res *http.Response) error {
+		if res.StatusCode >= 300 {
+			return c.answer(res, nil)
+		}
+		name = attachmentName(res.Header.Get("Content-Disposition"))
+		n, err := io.Copy(w, res.Body)
+		if err != nil {
+			return fmt.Errorf("the download stopped after %d bytes: %w", n, err)
+		}
+		return nil
 	})
+	return name, err
+}
+
+// attachmentName is the file name a Content-Disposition gives, without the
+// folders it may name: something to save under here, never a path.
+func attachmentName(header string) string {
+	_, params, err := mime.ParseMediaType(header)
+	if err != nil {
+		return ""
+	}
+	name := path.Base(strings.ReplaceAll(params["filename"], `\`, "/"))
+	if name == "." || name == ".." || name == "/" {
+		return ""
+	}
+	return name
 }
 
 // Retries is how many times a request refused for its rate (429), or by an
@@ -152,9 +197,9 @@ const longestWait = 60 * time.Second
 
 // send makes a request, again after the wait the API asks for when it
 // refuses for the rate. A change keeps its Idempotency-Key across attempts,
-// so a retried request is never done twice.
-func (c *Client) send(ctx context.Context, h *http.Client, method, path string, query url.Values, out interface{},
-	body func() (io.Reader, int64, string, func(), error)) error {
+// so a retried request is never done twice. read takes the answer.
+func (c *Client) send(ctx context.Context, h *http.Client, method, path string, query url.Values,
+	body func() (io.Reader, int64, string, func(), error), read func(*http.Response) error) error {
 	u := c.BaseURL + "/v1" + path
 	if len(query) > 0 {
 		u += "?" + query.Encode()
@@ -203,7 +248,7 @@ func (c *Client) send(ctx context.Context, h *http.Client, method, path string, 
 			continue
 		}
 		defer res.Body.Close()
-		return c.answer(res, out)
+		return read(res)
 	}
 }
 

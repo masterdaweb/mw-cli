@@ -29,7 +29,7 @@ func nameFrom(folder string) string {
 }
 
 func initCmd(a *App) *cobra.Command {
-	var project, name, kind string
+	var project, name, kind, location string
 	var port int
 	var force bool
 	cmd := &cobra.Command{
@@ -61,7 +61,7 @@ func initCmd(a *App) *cobra.Command {
 			if project == "" {
 				project = base
 			}
-			p, err := a.findOrCreateProject(cmd.Context(), project)
+			p, err := a.findOrCreateProject(cmd.Context(), project, location)
 			if err != nil {
 				return err
 			}
@@ -93,6 +93,7 @@ func initCmd(a *App) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&project, "project", "", "the project (default: the folder's name; made if missing)")
+	cmd.Flags().StringVar(&location, "location", "", "where a project made now runs, for good: a location's id, name or code (`mw regions`)")
 	cmd.Flags().StringVar(&name, "name", "", "the service's name (default: the folder's name)")
 	cmd.Flags().StringVar(&kind, "kind", "web", "web, private, worker or cron")
 	cmd.Flags().IntVar(&port, "port", 0, "the port the app listens on, as $PORT tells it (default 8080)")
@@ -100,8 +101,9 @@ func initCmd(a *App) *cobra.Command {
 	return cmd
 }
 
-// findOrCreateProject is the project by name, made when there is none.
-func (a *App) findOrCreateProject(ctx context.Context, name string) (*api.Project, error) {
+// findOrCreateProject is the project by name, made when there is none — in
+// the location named, or the platform's default when none is.
+func (a *App) findOrCreateProject(ctx context.Context, name, location string) (*api.Project, error) {
 	c, err := a.Client()
 	if err != nil {
 		return nil, err
@@ -116,10 +118,18 @@ func (a *App) findOrCreateProject(ctx context.Context, name string) (*api.Projec
 			return &p, nil
 		}
 	}
+	body := map[string]interface{}{"name": name}
+	if location != "" {
+		id, err := a.resolveLocation(ctx, appLocations, "projects", location)
+		if err != nil {
+			return nil, err
+		}
+		body["datacenter_id"] = id
+	}
 	var p api.Project
-	if err := c.Do(ctx, "POST", "/serverless/projects", nil, map[string]string{"name": name}, &p); err != nil {
+	if err := c.Do(ctx, "POST", "/serverless/projects", nil, body, &p); err != nil {
 		return nil, err
 	}
-	a.printf("Project %s created.\n", p.Name)
+	a.printf("Project %s created in %s.\n", p.Name, locationText(a.locationNames(ctx, p.DatacenterID), p.DatacenterID))
 	return &p, nil
 }

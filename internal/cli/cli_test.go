@@ -998,12 +998,17 @@ func TestRegistryCredentialsAreWrittenFromStdinAndUsedByImages(t *testing.T) {
 	pid := "0193f0e2-2222-7000-8000-000000000009"
 	f.answer("GET /v1/serverless/projects", 200, page(map[string]interface{}{"id": pid, "name": "loja"}))
 	f.answer("POST /v1/serverless/projects/"+pid+"/services", 200, map[string]interface{}{"service": service("WEB", "IMAGE")})
+	f.answer("POST /v1/serverless/images/inspect", 200, map[string]interface{}{"ports": []int{8080}, "volumes": []string{}, "user": nil})
 	if _, _, err := run(t, srv, t.TempDir(), "services", "create", "api", "--project", "loja", "--image", "ghcr.io/ana/api:1.4", "--registry", "ghcr.io"); err != nil {
 		t.Fatal(err)
 	}
 	img := jsonOf(t, f.last("POST /v1/serverless/projects/"+pid+"/services").Body)["source"].(map[string]interface{})["image"].(map[string]interface{})
 	if img["registry_credential_id"] != "r1" || img["ref"] != "ghcr.io/ana/api:1.4" {
 		t.Fatalf("sent image %v", img)
+	}
+	// The image is read with the same credential, for the paths it keeps data in.
+	if body := jsonOf(t, f.last("POST /v1/serverless/images/inspect").Body); body["registry_credential_id"] != "r1" || body["image"] != "ghcr.io/ana/api:1.4" {
+		t.Fatalf("inspected %v", body)
 	}
 	f.answer("DELETE /v1/serverless/registry-credentials/r1", 204, nil)
 	if out, _, err := run(t, srv, t.TempDir(), "registry", "remove", "ghcr.io"); err != nil || !strings.Contains(out, "deleted") {

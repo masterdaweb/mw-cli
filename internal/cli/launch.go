@@ -24,7 +24,7 @@ var frameworkNames = map[string]string{
 var providerHosts = map[string]string{"github.com": "GITHUB", "gitlab.com": "GITLAB", "bitbucket.org": "BITBUCKET"}
 
 func launchCmd(a *App) *cobra.Command {
-	var name, branch, provider, connection string
+	var name, branch, provider, connection, location string
 	var without []string
 	var yes, dryRun, detach bool
 	cmd := &cobra.Command{
@@ -40,7 +40,8 @@ func launchCmd(a *App) *cobra.Command {
 		Example: "  mw launch ana/loja\n" +
 			"  mw launch https://github.com/ana/loja --name loja\n" +
 			"  mw launch ana/loja --without scheduler --without cache --yes\n" +
-			"  mw launch ana/loja --dry-run",
+			"  mw launch ana/loja --dry-run\n" +
+			"  mw launch ana/loja --location dallas",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := a.Client()
@@ -97,6 +98,13 @@ func launchCmd(a *App) *cobra.Command {
 			}
 			var r api.TemplateDeployResult
 			body := map[string]interface{}{"git": git, "project_name": name, "keep": keep}
+			if location != "" {
+				id, err := a.resolveLocation(cmd.Context(), appLocations, "projects", location)
+				if err != nil {
+					return err
+				}
+				body["datacenter_id"] = id
+			}
 			if err := c.Do(cmd.Context(), "POST", "/serverless/projects/from-source", nil, body, &r); err != nil {
 				return err
 			}
@@ -110,6 +118,7 @@ func launchCmd(a *App) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&name, "name", "", "the new project's name (default: the repository's)")
+	cmd.Flags().StringVar(&location, "location", "", locationFlag)
 	cmd.Flags().StringVar(&branch, "branch", "", "the branch to publish (default: the repository's default branch)")
 	cmd.Flags().StringVar(&provider, "provider", "", "github, gitlab or bitbucket, when more than one is connected")
 	cmd.Flags().StringVar(&connection, "connection", "", "the connected account's id, when one provider has several")

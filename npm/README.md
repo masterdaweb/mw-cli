@@ -40,7 +40,7 @@ mw instances
 mw instances create --name web-1 --plan c2m4 --image ubuntu-24-04 --ssh-key laptop --wait
 mw dns records set example.com www A 203.0.113.10
 mw deploy                       # the app in this folder, serverless
-mw db create shop-db --engine postgres
+mw db create shop-db --engine postgres --location dallas   # where it runs: `mw regions`
 mw security                     # your security score and what lowers it
 mw vpn users create office-vpn maria --email maria@example.com --apply
 ```

@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/masterdaweb/mw-cli/internal/api"
@@ -13,7 +15,7 @@ func regionsCmd(a *App) *cobra.Command {
 	return &cobra.Command{
 		Use:     "regions",
 		Aliases: []string{"region", "locations"},
-		Short:   "Where instances can be created",
+		Short:   "Where instances, apps and databases can be created (each one's --location)",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			c, err := a.Client()
@@ -24,9 +26,14 @@ func regionsCmd(a *App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			l := listing{headers: []string{"ID", "NAME", "CODE", "AVAILABLE", "IPV4", "IPV6"}, empty: "No regions."}
+			// Apps and databases each say where they take new ones; a token
+			// that may not read them shows a dash.
+			apps := a.deployableAt(cmd.Context(), appLocations)
+			dbs := a.deployableAt(cmd.Context(), dbLocations)
+			l := listing{headers: []string{"ID", "NAME", "CODE", "INSTANCES", "APPS", "DATABASES", "IPV4", "IPV6"}, empty: "No regions."}
 			for _, r := range all {
-				l.add(r.ID, r.ID, r.Name, orDashPtr(r.RegionName), yesNo(r.Available), yesNo(r.IPv4Available), yesNo(r.IPv6Available))
+				l.add(r.ID, r.ID, r.Name, orDashPtr(r.RegionName), yesNo(r.Available), offeredText(apps, r.ID),
+					offeredText(dbs, r.ID), yesNo(r.IPv4Available), yesNo(r.IPv6Available))
 			}
 			return a.printList(all, l)
 		},
@@ -163,4 +170,28 @@ func addonsCmd(a *App) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&term, "term", "monthly", "the billing term to price")
 	return cmd
+}
+
+// deployableAt is whether each location at path takes new ones now, by
+// region id; nil when the list cannot be read.
+func (a *App) deployableAt(ctx context.Context, path string) map[string]bool {
+	all, err := a.locations(ctx, path)
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]bool, len(all))
+	for _, l := range all {
+		out[strconv.FormatInt(l.ID, 10)] = l.Deployable
+	}
+	return out
+}
+
+// offeredText is "yes", "no" (listed, temporarily unavailable) or a dash (not
+// offered there, or not known).
+func offeredText(at map[string]bool, id string) string {
+	ok, listed := at[id]
+	if !listed {
+		return "-"
+	}
+	return yesNo(ok)
 }

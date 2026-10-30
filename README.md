@@ -82,7 +82,7 @@ command exits non-zero and says why, with the request id to quote to support.
 ## VPS instances
 
 ```sh
-mw regions && mw plans && mw images            # where, what size, what system or app
+mw regions && mw plans && mw images            # where (instances, apps, databases), what size, what system or app
 mw ssh-keys add                                # ~/.ssh/id_ed25519.pub (or a file)
 mw instances create --plan c2m4 --image ubuntu-24-04 --ssh-key work --name web-1 --wait
 mw instances create --plan c4m8 --image wordpress --subscription <id> --project loja --yes
@@ -178,6 +178,7 @@ services, databases and buckets:
 
 ```sh
 mw projects create loja
+mw projects create loja-us --location dallas       # where it runs, for good (`mw regions`)
 mw projects resources add loja instance web-1 web-2
 mw projects resources add loja bucket loja-fotos
 mw projects resources loja                         # what it holds
@@ -268,6 +269,7 @@ the console (**Settings › Integrations**); with several accounts connected,
 mw templates                                 # the gallery: Laravel, Next.js, Django, FastAPI, Go, PHP + MySQL, n8n…
 mw templates show laravel                    # what it makes, what it costs a month, what it asks
 mw templates deploy laravel --name loja      # the whole project: services, databases, bucket, wired
+mw templates deploy laravel --name loja --location dallas  # …in another location
 ```
 
 A template makes the project in one go — its services built from the
@@ -383,11 +385,40 @@ second while it runs and ends with the command, after an hour at the latest. The
 token needs `serverless:run`: a token that deploys cannot open a shell. Every run
 is in the service's activity log and on its Terminal tab in the console.
 
+## Persistent volumes
+
+```sh
+mw volume add --path /data --size 5          # a disk that stays across deployments, made by one
+mw volume                                    # where it is mounted, its size and how full it is
+mw volume grow --size 20                     # bigger at once, without a restart (it never shrinks)
+mw volume backups                            # the daily backups (kept 7 days) and yours
+mw volume backup --wait                      # one now, kept until you delete it
+mw volume restore <backup-id> --confirm web  # the data as it was (what is there now is backed up first)
+mw volume ls uploads                         # a folder of it
+mw volume download uploads                   # a folder, a file or all of it, as a .tar.gz
+mw volume upload ./uploads --to uploads      # a folder's files into it (or a file; --extract a .tar.gz)
+mw volume rm uploads/tmp --confirm web
+mw volume remove --confirm web               # the volume and its data go; a last backup is kept 7 days
+mw services create blog --project loja --image ghost:6 --port 2368 --volume /var/lib/ghost/content:5
+```
+
+A web, private or worker service can have a volume, mounted where you say:
+uploads, files, an SQLite database. A service with a volume runs one instance,
+and each deployment stops the running version before the new one starts.
+Paths in the volume are from its root (`uploads/2026`, not `/data/uploads`).
+The files are reached through the service's instance — one is started while
+it sleeps — so its image needs a shell and tar. `mw volume backups --deleted`
+lists the backups of a project's volumes that went (a deleted service's, a
+volume taken away), restorable into a service of the project for 7 days.
+`mw services create --image` says when the image keeps data where no volume
+holds it.
+
 ## Databases
 
 ```sh
 mw db sizes                                  # sizes on offer, with prices
 mw db create loja-prod --extension vector    # PostgreSQL; ready in a few minutes
+mw db create loja-us --location dallas       # in another location (a project's database runs in its project's)
 mw redis create filas                        # Redis
 mw db connect loja-prod                      # psql, through the platform, the password passed for you
 mw db tunnel loja-prod --port 15432          # a port on this computer for any tool (DBeaver, an ORM)

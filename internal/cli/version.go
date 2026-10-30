@@ -41,7 +41,7 @@ func addGroups(root *cobra.Command) {
 		{"infra", "Instances (VPS):", []string{"instances", "snapshots", "backups", "ssh-keys", "regions", "plans", "images", "custom-images", "addons", "orders", "operations"}},
 		{"network", "Network:", []string{"firewalls", "vpcs", "vpn", "dns", "rdns"}},
 		{"security", "Security:", []string{"security"}},
-		{"apps", "Serverless apps:", []string{"projects", "services", "init", "link", "status", "deploy", "redeploy", "restart", "rollback", "deployments", "logs", "scale", "run", "env", "domains", "bindings", "templates", "launch", "groups", "registry", "metrics", "alerts", "egress", "outbound-ips", "drains"}},
+		{"apps", "Serverless apps:", []string{"projects", "services", "init", "link", "status", "deploy", "redeploy", "restart", "rollback", "deployments", "logs", "scale", "run", "env", "domains", "bindings", "volume", "templates", "launch", "groups", "registry", "metrics", "alerts", "egress", "outbound-ips", "drains"}},
 		{"data", "Databases and storage:", []string{"db", "redis", "storage"}},
 		{"billing", "Billing:", []string{"subscriptions", "invoices", "wallet", "usage"}},
 		{"account", "Account:", []string{"login", "logout", "whoami", "activity", "webhooks", "version"}},

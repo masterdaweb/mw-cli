@@ -26,29 +26,49 @@ func projectsCmd(a *App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			l := listing{headers: []string{"NAME", "INSTANCES", "SERVICES", "LIVE", "FAILED", "DATABASES", "BUCKETS", "ID"}, empty: "No projects yet: `mw projects create <name>`."}
+			ids := make([]*int64, len(all))
+			for i := range all {
+				ids[i] = all[i].DatacenterID
+			}
+			names := a.locationNames(cmd.Context(), ids...)
+			l := listing{headers: []string{"NAME", "LOCATION", "INSTANCES", "SERVICES", "LIVE", "FAILED", "DATABASES", "BUCKETS", "ID"}, empty: "No projects yet: `mw projects create <name>`."}
 			for _, p := range all {
-				l.add(p.ID, p.Name, fmt.Sprint(p.InstanceCount), fmt.Sprint(p.ServiceCount), fmt.Sprint(p.LiveCount), fmt.Sprint(p.FailedCount), fmt.Sprint(p.DatabaseCount), fmt.Sprint(p.BucketCount), p.ID)
+				l.add(p.ID, p.Name, locationText(names, p.DatacenterID), fmt.Sprint(p.InstanceCount), fmt.Sprint(p.ServiceCount), fmt.Sprint(p.LiveCount), fmt.Sprint(p.FailedCount), fmt.Sprint(p.DatabaseCount), fmt.Sprint(p.BucketCount), p.ID)
 			}
 			return a.printList(all, l)
 		},
 	}
-	cmd.AddCommand(&cobra.Command{
+	var createLocation string
+	create := &cobra.Command{
 		Use:   "create <name>",
-		Short: "Create a project",
-		Args:  cobra.ExactArgs(1),
+		Short: "Create a project, in the location you pick (default: the platform's)",
+		Example: "  mw projects create loja\n" +
+			"  mw projects create loja-us --location dallas",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := a.Client()
 			if err != nil {
 				return err
 			}
+			body := map[string]interface{}{"name": args[0]}
+			if createLocation != "" {
+				id, err := a.resolveLocation(cmd.Context(), appLocations, "projects", createLocation)
+				if err != nil {
+					return err
+				}
+				body["datacenter_id"] = id
+			}
 			var p api.Project
-			if err := c.Do(cmd.Context(), "POST", "/serverless/projects", nil, map[string]string{"name": args[0]}, &p); err != nil {
+			if err := c.Do(cmd.Context(), "POST", "/serverless/projects", nil, body, &p); err != nil {
 				return err
 			}
-			return a.print(p, func(w *tabwriter.Writer) { fmt.Fprintf(w, "Project %s created (%s).\n", p.Name, p.ID) })
+			return a.print(p, func(w *tabwriter.Writer) {
+				fmt.Fprintf(w, "Project %s created in %s (%s).\n", p.Name, locationText(a.locationNames(cmd.Context(), p.DatacenterID), p.DatacenterID), p.ID)
+			})
 		},
-	})
+	}
+	create.Flags().StringVar(&createLocation, "location", "", locationFlag)
+	cmd.AddCommand(create)
 	var copyName string
 	duplicate := &cobra.Command{
 		Use:     "duplicate <project>",
@@ -298,9 +318,9 @@ func servicesCmd(a *App) *cobra.Command {
 	cmd.Flags().StringVar(&project, "project", "", "only this project's services")
 
 	var (
-		image, kind, repo, branch, provider, connection, registry string
-		port                                                      int
-		envs                                                      []string
+		image, kind, repo, branch, provider, connection, registry, volume string
+		port                                                              int
+		envs                                                              []string
 	)
 	create := &cobra.Command{
 		Use:   "create <name>",
@@ -308,11 +328,14 @@ func servicesCmd(a *App) *cobra.Command {
 		Long: "Create a service in a project and deploy it.\n" +
 			"From a repository (--repo ana/loja, connected in the console's Settings › Integrations, so\n" +
 			"every push deploys; or the https address of a public one): built from its code.\n" +
-			"From an image (--image nginx:1.27): run as it is.\n" +
+			"From an image (--image nginx:1.27): run as it is; the paths it keeps data in that no volume\n" +
+			"holds are named once it is made.\n" +
+			"--volume /data:5 gives it a persistent volume of 5 GB at /data (it then runs one instance).\n" +
 			"A whole app with its databases at once: `mw launch`.",
 		Example: "  mw services create api --project loja --repo ana/loja --branch main\n" +
 			"  mw services create site --project loja --repo https://github.com/ana/site\n" +
-			"  mw services create proxy --project loja --image nginx:1.27 --port 80",
+			"  mw services create proxy --project loja --image nginx:1.27 --port 80\n" +
+			"  mw services create blog --project loja --image ghost:6 --port 2368 --volume /var/lib/ghost/content:5",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if project == "" {
@@ -320,6 +343,16 @@ func servicesCmd(a *App) *cobra.Command {
 			}
 			if (image == "") == (repo == "") {
 				return errors.New("pass --repo (a repository) or --image (an image), one of them")
+			}
+			mount, size := "", 0
+			if volume != "" {
+				var err error
+				if mount, size, err = parseVolume(volume); err != nil {
+					return err
+				}
+				if strings.EqualFold(kind, "cron") {
+					return errors.New("a cron job cannot have a volume: give one to the service that keeps the data")
+				}
 			}
 			p, err := a.resolveProject(cmd.Context(), project)
 			if err != nil {
@@ -357,8 +390,21 @@ func servicesCmd(a *App) *cobra.Command {
 				"kind":   strings.ToUpper(kind),
 				"source": source,
 			}
+			settings := map[string]interface{}{}
 			if port > 0 {
-				body["settings"] = map[string]int{"port": port}
+				settings["port"] = port
+			}
+			if mount != "" {
+				settings["volume_mount_path"], settings["volume_size_gb"] = mount, size
+				// A volume has one writer: the service runs one instance.
+				if strings.EqualFold(kind, "worker") {
+					settings["instances"] = 1
+				} else {
+					settings["max_instances"] = 1
+				}
+			}
+			if len(settings) > 0 {
+				body["settings"] = settings
 			}
 			if len(vars) > 0 {
 				var list []map[string]string
@@ -381,10 +427,27 @@ func servicesCmd(a *App) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// What the image keeps where no volume holds it: told, not refused.
+			var hints []string
+			if image != "" && !strings.EqualFold(kind, "cron") {
+				inspect := map[string]string{"image": image}
+				if id := img["registry_credential_id"]; id != "" {
+					inspect["registry_credential_id"] = id
+				}
+				hints = a.imageVolumeHints(cmd.Context(), inspect, out.Service.Name, mount)
+			}
+			if a.JSON {
+				for _, h := range hints {
+					fmt.Fprintln(a.Err, h)
+				}
+			}
 			return a.print(out, func(w *tabwriter.Writer) {
 				fmt.Fprintf(w, "Service %s created in %s.\n", out.Service.Name, p.Name)
 				if out.Deployment != nil {
 					fmt.Fprintf(w, "Deployment #%d started: `mw logs --service %s` follows it.\n", out.Deployment.Number, out.Service.Name)
+				}
+				for _, h := range hints {
+					fmt.Fprintln(w, h)
 				}
 			})
 		},
@@ -399,6 +462,7 @@ func servicesCmd(a *App) *cobra.Command {
 	create.Flags().StringVar(&kind, "kind", "web", "web, private, worker or cron")
 	create.Flags().IntVar(&port, "port", 0, "the port the app listens on (web and private)")
 	create.Flags().StringArrayVar(&envs, "env", nil, "a variable, KEY=value (repeat)")
+	create.Flags().StringVar(&volume, "volume", "", "a persistent volume, PATH:GB like /data:5 (the service then runs one instance)")
 	cmd.AddCommand(create)
 
 	var protectService bool
