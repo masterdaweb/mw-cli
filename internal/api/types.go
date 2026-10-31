@@ -470,6 +470,9 @@ type DatabaseJob struct {
 	SizeBytes *string `json:"size_bytes"`
 	Source    *string `json:"source"`
 	Replace   *bool   `json:"replace"`
+	// Database is what an import restores as (SQL Server), or which of its
+	// databases an export holds.
+	Database  *string `json:"database"`
 	ErrorCode *string `json:"error_code"`
 	Error     *string `json:"error"`
 	Report    *struct {
@@ -524,9 +527,41 @@ type Database struct {
 	Cost struct {
 		MonthToDateMicroCents string `json:"month_to_date_micro_cents"`
 	} `json:"cost"`
-	CreatedAt  string  `json:"created_at"`
-	DeletedAt  *string `json:"deleted_at"`
-	PurgeAfter *string `json:"purge_after"`
+	// ExtraDatabases are the databases it holds besides its own (SQL
+	// Server's imports, or ones made in the console).
+	ExtraDatabases []string `json:"extra_databases"`
+	// SQL Server: the server's collation (fixed at creation) and licence.
+	Collation *string          `json:"collation"`
+	Licence   *DatabaseLicence `json:"licence"`
+	// Warnings are what the owner should act on (none: nothing).
+	Warnings   []DatabaseWarning `json:"warnings"`
+	CreatedAt  string            `json:"created_at"`
+	DeletedAt  *string           `json:"deleted_at"`
+	PurgeAfter *string           `json:"purge_after"`
+}
+
+// DatabaseLicence is a SQL Server database's edition and licence: never the
+// product key itself.
+type DatabaseLicence struct {
+	Edition       string `json:"edition"`
+	HasProductKey bool   `json:"has_product_key"`
+	// RunningEdition is what the server reports running ("" while it is
+	// down; null before it reported).
+	RunningEdition *string `json:"running_edition"`
+	// KeyApplied: the recorded key is in force (null for Express, or before
+	// the server reported).
+	KeyApplied *bool `json:"key_applied"`
+	// Problem is why the edition is not the one asked for, in SQL Server's
+	// words (the key it refused).
+	Problem *string `json:"problem"`
+}
+
+// DatabaseWarning is something the owner should act on: a stable code, and
+// the API's sentence for it.
+type DatabaseWarning struct {
+	Code     string `json:"code"`
+	Severity string `json:"severity"`
+	Message  string `json:"message"`
 }
 
 type DatabaseEngineInfo struct {

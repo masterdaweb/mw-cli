@@ -73,19 +73,23 @@ func pointText(p api.DatabaseRestorePoint) string {
 }
 
 func dbRestoreCmd(a *App) *cobra.Command {
-	var to, at, point, size, location string
-	var detach bool
+	var to, at, point, size, location, edition, productKey string
+	var detach, acceptTerms, attested bool
 	cmd := &cobra.Command{
 		Use:   "restore <name> --to <new-name>",
 		Short: "Restore a database into a new one: to now, an instant, or a restore point",
-		Long: "Restore a PostgreSQL, MySQL or MariaDB database into a NEW database (never over it):\n" +
-			"to the latest moment its backups hold (the default), to an instant (--time) or to a\n" +
-			"restore point (--point, see `restore-points`). The new database has its own name,\n" +
+		Long: "Restore a PostgreSQL, MySQL, MariaDB or SQL Server database into a NEW database (never\n" +
+			"over it): to the latest moment its backups hold (the default), to an instant (--time) or\n" +
+			"to a restore point (--point, see `restore-points`). The new database has its own name,\n" +
 			"address and owner password, the same database and user names; your services keep\n" +
-			"using the original until you switch them (the console's restored database page).",
+			"using the original until you switch them (the console's restored database page).\n\n" +
+			"SQL Server: Microsoft's licence terms are accepted again for the new machine. It runs\n" +
+			"the original's edition (and its product key) unless --edition says another — a restore\n" +
+			"is how an edition goes down to Express; your own licence must cover the new machine too.",
 		Example: "  mw db restore loja-prod --to loja-ontem --time 2026-10-24T18:30:00-03:00\n" +
 			"  mw db restore loja-prod --to loja-antes --point deploy-web-12\n" +
-			"  mw db restore loja-prod --to loja-us --location dallas",
+			"  mw db restore loja-prod --to loja-us --location dallas\n" +
+			"  mw db restore erp --to erp-ontem --time 2026-10-29T18:00:00-03:00 --accept-terms",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if to == "" {
@@ -107,6 +111,17 @@ func dbRestoreCmd(a *App) *cobra.Command {
 			}
 			if size != "" {
 				body["size"] = size
+			}
+			src, err := a.database(cmd.Context(), args[0], "")
+			if err != nil {
+				return err
+			}
+			if isSQLServer(src.Engine) {
+				if err := a.sqlServerRestoreLicence(body, src, edition, productKey, acceptTerms, attested); err != nil {
+					return err
+				}
+			} else if edition != "" || productKey != "" || acceptTerms || attested {
+				return errors.New("--edition, --product-key, --licence-attested and --accept-terms are for SQL Server databases")
 			}
 			// Default: where the original runs.
 			if location != "" {
@@ -143,6 +158,10 @@ func dbRestoreCmd(a *App) *cobra.Command {
 	cmd.Flags().StringVar(&size, "size", "", "a size of the same engine (default: the original's)")
 	cmd.Flags().StringVar(&location, "location", "", "where the new database runs: a location's id, name or code (default: the original's; `mw regions`)")
 	cmd.Flags().BoolVar(&detach, "detach", false, "do not wait for it to be ready")
+	cmd.Flags().StringVar(&edition, "edition", "", "SQL Server: express, standard or enterprise (default: the original's)")
+	cmd.Flags().StringVar(&productKey, "product-key", "", "SQL Server standard or enterprise: another product key (default: the original's; - reads it from standard input)")
+	cmd.Flags().BoolVar(&attested, "licence-attested", false, "SQL Server standard or enterprise: your licence has Software Assurance or is a subscription, and covers the new machine")
+	cmd.Flags().BoolVar(&acceptTerms, "accept-terms", false, "SQL Server: accept Microsoft's licence terms ("+sqlServerTermsURL+")")
 	return cmd
 }
 
@@ -348,18 +367,25 @@ func (a *App) waitJob(ctx context.Context, name, id string) (*api.DatabaseJob, e
 
 func dbDumpCmd(a *App) *cobra.Command {
 	var detach bool
+	var dumpDB string
 	cmd := &cobra.Command{
 		Use:   "dump <name> [file]",
 		Short: "Have the database make a dump, and download it (nothing to install)",
 		Long: "The database makes a dump of itself (PostgreSQL: its custom format, for pg_restore;\n" +
-			"MySQL and MariaDB: gzipped SQL), one consistent snapshot while it keeps serving, kept\n" +
-			"7 days; then it is downloaded here. `mw db export` makes one with your own tools instead.",
-		Example: "  mw db dump loja-prod\n  mw db dump loja-prod backup.dump",
+			"MySQL and MariaDB: gzipped SQL; SQL Server: a .bak of one of its databases, --database,\n" +
+			"for RESTORE DATABASE on any SQL Server as new or newer), one consistent snapshot while it\n" +
+			"keeps serving, kept 7 days; then it is downloaded here. `mw db export` makes one with your\n" +
+			"own tools instead (not SQL Server).",
+		Example: "  mw db dump loja-prod\n  mw db dump loja-prod backup.dump\n  mw db dump erp erp.bak --database empresa2",
 		Args:    cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, _ := a.Client()
 			var job api.DatabaseJob
-			if err := c.Do(cmd.Context(), "POST", dbPath(args[0], "/exports"), nil, nil, &job); err != nil {
+			var body interface{}
+			if dumpDB != "" {
+				body = map[string]interface{}{"database": dumpDB}
+			}
+			if err := c.Do(cmd.Context(), "POST", dbPath(args[0], "/exports"), nil, body, &job); err != nil {
 				return err
 			}
 			if detach {
@@ -392,6 +418,7 @@ func dbDumpCmd(a *App) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&detach, "detach", false, "ask for the dump and return; run again to download it")
+	cmd.Flags().StringVar(&dumpDB, "database", "", "SQL Server: which of its databases to dump (default: its own)")
 	return cmd
 }
 

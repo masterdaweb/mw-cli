@@ -60,7 +60,10 @@ func TestFilterMySQLDumpStreamsLongLines(t *testing.T) {
 }
 
 func TestBindingKindOfEachEngine(t *testing.T) {
-	for engine, want := range map[string]string{"postgres": "POSTGRES", "mysql": "MYSQL", "mariadb": "MYSQL", "valkey": "REDIS"} {
+	// An engine missing here once bound as POSTGRES, and the API answered
+	// "sqlcheck is not a PostgreSQL database" for every SQL Server binding.
+	for engine, want := range map[string]string{"postgres": "POSTGRES", "mysql": "MYSQL", "mariadb": "MYSQL", "valkey": "REDIS",
+		"sqlserver": "SQLSERVER", "oracle": "ORACLE"} {
 		if got := bindingKind(engine); got != want {
 			t.Errorf("%s binds as %s, want %s", engine, got, want)
 		}

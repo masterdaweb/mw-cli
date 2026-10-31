@@ -14,12 +14,17 @@ import (
 // MariaDB are one kind, with one set of variables.
 func bindingKind(engine string) string {
 	switch engine {
+	case "postgres":
+		return "POSTGRES"
 	case "valkey":
 		return "REDIS"
 	case "mysql", "mariadb":
 		return "MYSQL"
+	case "sqlserver":
+		return "SQLSERVER"
 	}
-	return "POSTGRES"
+	// An engine this CLI does not know: the API names it, and refuses it.
+	return strings.ToUpper(engine)
 }
 
 func (a *App) bindings(ctx context.Context, s *api.Service) ([]api.Binding, error) {
@@ -158,7 +163,9 @@ func dbBindCmd(a *App, engine string) *cobra.Command {
 			"its code reads. Layouts: url (DATABASE_URL / REDIS_URL, the default), framework\n" +
 			"(Laravel's DB_* / REDIS_*), libpq (PostgreSQL's PG*), prefixed (with --prefix) or\n" +
 			"dotnet (ConnectionStrings__DefaultConnection, Redis for Redis; --prefix names it).\n" +
-			"MySQL and MariaDB take url, framework, prefixed or dotnet.",
+			"MySQL and MariaDB take url, framework, prefixed or dotnet. SQL Server takes url\n" +
+			"(sqlserver://, Prisma's form), framework (Laravel's sqlsrv), prefixed (with a JDBC URL)\n" +
+			"or dotnet (SqlClient).",
 		Example: "  mw db bind loja-prod --service web --layout framework\n  mw redis bind filas --service worker",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

@@ -151,6 +151,17 @@ func (c *Client) SendFile(ctx context.Context, method, path string, query url.Va
 	}, func(res *http.Response) error { return c.answer(res, out) })
 }
 
+// SendSection sends n bytes of r from off as the raw body (one part of a
+// file being uploaded), read from the disk as it goes. Like SendFile, only
+// ctx bounds it.
+func (c *Client) SendSection(ctx context.Context, method, path string, r io.ReaderAt, off, n int64, contentType string, out interface{}) error {
+	long := *c.HTTP
+	long.Timeout = 0
+	return c.send(ctx, &long, method, path, nil, func() (io.Reader, int64, string, func(), error) {
+		return io.NewSectionReader(r, off, n), n, contentType, func() {}, nil
+	}, func(res *http.Response) error { return c.answer(res, out) })
+}
+
 // Download writes the body of a GET to w as it comes (a volume's .tar.gz) and
 // returns the name the API gives the file (Content-Disposition), "" without
 // one. Like Upload, only ctx bounds it; a refusal is read as any other.

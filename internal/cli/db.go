@@ -28,12 +28,14 @@ func engineName(engine string) string {
 		return "MySQL"
 	case "mariadb":
 		return "MariaDB"
+	case "sqlserver":
+		return "SQL Server"
 	}
 	return "PostgreSQL"
 }
 
 // engines are what `mw db create --engine` takes.
-var engines = []string{"postgres", "mysql", "mariadb", "valkey"}
+var engines = []string{"postgres", "mysql", "mariadb", "sqlserver", "valkey"}
 
 // group is the command a database's engine is under: `mw redis` for Redis,
 // `mw db` for the SQL databases.
@@ -66,7 +68,7 @@ func dbCmd(a *App, use, engine string) *cobra.Command {
 	}
 	cmd := &cobra.Command{
 		Use:   use,
-		Short: "Managed PostgreSQL, MySQL, MariaDB and Redis: create, connect, resize, bind to services",
+		Short: "Managed PostgreSQL, MySQL, MariaDB, SQL Server and Redis: create, connect, resize, bind to services",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			all, err := a.databases(cmd.Context(), engine)
@@ -214,13 +216,16 @@ func dbSizesCmd(a *App, engine string) *cobra.Command {
 
 func dbCreateCmd(a *App, engine, kind string) *cobra.Command {
 	var size, project, eviction, version, location string
+	var edition, productKey, collation string
 	var allow, extensions []string
-	var noBackups, noProtection, detach bool
+	var noBackups, noProtection, detach, acceptTerms, attested bool
 	cmd := &cobra.Command{
 		Use:   "create <name>",
 		Short: "Create a " + kind + " (ready in a few minutes; billed by the hour)",
 		Example: map[string]string{
-			"":       "  mw db create loja-prod --size pg-1-1 --extension vector\n  mw db create loja-wp --engine mysql\n  mw db create erp --engine mariadb --version 11.4",
+			"": "  mw db create loja-prod --size pg-1-1 --extension vector\n  mw db create loja-wp --engine mysql\n  mw db create erp --engine mariadb --version 11.4\n" +
+				"  mw db create erp --engine sqlserver --accept-terms --collation Latin1_General_CI_AS\n" +
+				"  mw db create erp --engine sqlserver --size ms-4-8 --edition standard --product-key - --licence-attested --accept-terms",
 			"valkey": "  mw redis create filas --size kv-1-1",
 		}[engine],
 		Args: cobra.ExactArgs(1),
@@ -234,6 +239,9 @@ func dbCreateCmd(a *App, engine, kind string) *cobra.Command {
 			}
 			if len(extensions) > 0 && eng != "postgres" {
 				return errors.New("--extension is for PostgreSQL databases")
+			}
+			if !isSQLServer(eng) && (edition != "" || productKey != "" || collation != "" || attested) {
+				return errors.New("--edition, --product-key, --licence-attested and --collation are for SQL Server databases")
 			}
 			info, err := a.databasesInfo(cmd.Context())
 			if err != nil {
@@ -279,6 +287,14 @@ func dbCreateCmd(a *App, engine, kind string) *cobra.Command {
 			if eviction != "" {
 				body["eviction_policy"] = eviction
 			}
+			if isSQLServer(eng) {
+				if err := a.sqlServerLicence(body, edition, productKey, acceptTerms, attested); err != nil {
+					return err
+				}
+				if collation != "" {
+					body["collation"] = collation
+				}
+			}
 			if noBackups {
 				body["backups"] = false
 			}
@@ -303,7 +319,12 @@ func dbCreateCmd(a *App, engine, kind string) *cobra.Command {
 		},
 	}
 	if engine == "" {
-		cmd.Flags().String("engine", "postgres", "postgres, mysql, mariadb or valkey (Redis)")
+		cmd.Flags().String("engine", "postgres", "postgres, mysql, mariadb, sqlserver or valkey (Redis)")
+		cmd.Flags().StringVar(&edition, "edition", "", "SQL Server: express (free; the default), standard or enterprise (your own licence)")
+		cmd.Flags().StringVar(&productKey, "product-key", "", "SQL Server standard or enterprise: your licence's product key (- reads it from standard input)")
+		cmd.Flags().BoolVar(&attested, "licence-attested", false, "SQL Server standard or enterprise: your licence has Software Assurance or is a subscription")
+		cmd.Flags().BoolVar(&acceptTerms, "accept-terms", false, "SQL Server: accept Microsoft's licence terms ("+sqlServerTermsURL+")")
+		cmd.Flags().StringVar(&collation, "collation", "", "SQL Server: the server collation, for good (default SQL_Latin1_General_CP1_CI_AS)")
 	}
 	cmd.Flags().StringVar(&size, "size", "", "a size from `sizes` (default: the smallest)")
 	cmd.Flags().StringVar(&version, "version", "", "a release series from `sizes`, e.g. 18 or 11.4 (default: the newest)")
@@ -412,6 +433,15 @@ func dbGetCmd(a *App, engine string) *cobra.Command {
 				if d.Connection.Database != nil {
 					fmt.Fprintf(w, "Database name\t%s\n", *d.Connection.Database)
 				}
+				if len(d.ExtraDatabases) > 0 {
+					fmt.Fprintf(w, "Also databases\t%s\n", strings.Join(d.ExtraDatabases, ", "))
+				}
+				if l := d.Licence; l != nil {
+					fmt.Fprintf(w, "Edition\t%s\n", sqlServerEditionText(l))
+				}
+				if d.Collation != nil {
+					fmt.Fprintf(w, "Collation\t%s\n", *d.Collation)
+				}
 				fmt.Fprintf(w, "User\t%s\n", d.Connection.Username)
 				fmt.Fprintf(w, "URL\t%s\n", d.Connection.URI)
 				if len(d.AllowedCIDRs) > 0 {
@@ -432,6 +462,9 @@ func dbGetCmd(a *App, engine string) *cobra.Command {
 					health += " · disk " + bytesText(*h.DiskUsedBytes) + " of " + bytesText(*h.DiskTotalBytes)
 				}
 				fmt.Fprintf(w, "Health\t%s\n", health)
+				for _, wn := range d.Warnings {
+					fmt.Fprintf(w, "Warning\t%s\n", wn.Message)
+				}
 				if b := d.Backups; b != nil {
 					fmt.Fprintf(w, "Last backup\t%s\n", whenPtr(b.LastBackupAt))
 					if b.EarliestRestoreAt != nil {
@@ -706,7 +739,7 @@ func dbConnectCmd(a *App, engine string) *cobra.Command {
 	var pooler bool
 	cmd := &cobra.Command{
 		Use:   "connect <name> [-- client arguments]",
-		Short: "Open psql, mysql, mariadb or redis-cli on a database, through the platform",
+		Short: "Open psql, mysql, mariadb, sqlcmd or redis-cli on a database, through the platform",
 		Long: "Open the database's own client — psql (PostgreSQL), mysql (MySQL), mariadb (MariaDB)\n" +
 			"or redis-cli (Redis) — with its owner's password passed in the environment or a file\n" +
 			"only you can read, never on the command line. It connects through the platform, so the\n" +
@@ -741,6 +774,9 @@ func dbConnectCmd(a *App, engine string) *cobra.Command {
 			}
 			if isMySQL(d.Engine) {
 				return a.mysqlConnect(cmd.Context(), d, args[1:])
+			}
+			if isSQLServer(d.Engine) {
+				return a.sqlServerConnect(cmd.Context(), d, args[1:])
 			}
 			if d.Status != "running" && d.Status != "updating" {
 				return fmt.Errorf("%s is %s: it takes connections once running", d.Name, dbStatus(d.Status))
@@ -810,6 +846,9 @@ func dbExportCmd(a *App) *cobra.Command {
 			if d.Engine == "valkey" {
 				return fmt.Errorf("%s is a Redis database: its data is kept on its disk, there is no dump to take", d.Name)
 			}
+			if isSQLServer(d.Engine) {
+				return fmt.Errorf("a SQL Server database is exported as a .bak the server makes itself: `mw db dump %s`", d.Name)
+			}
 			file := ""
 			if len(args) == 2 {
 				file = args[1]
@@ -866,11 +905,11 @@ func dbExportCmd(a *App) *cobra.Command {
 }
 
 func dbImportCmd(a *App) *cobra.Command {
-	var clean, replace, detach bool
-	var fromURL string
+	var clean, replace, detach, cancelUpload bool
+	var fromURL, intoDB string
 	cmd := &cobra.Command{
-		Use:   "import <name> <file> | import <name> --from-url <url>",
-		Short: "Load a dump into a SQL database (psql, pg_restore, mysql or mariadb)",
+		Use:   "import <name> <file> | import <name> --from-url <url> | import <name> --cancel",
+		Short: "Load a dump into a SQL database (psql, pg_restore, mysql or mariadb), or a SQL Server .bak",
 		Long: "Load a dump into a database. PostgreSQL, through its direct port: a .sql file with psql\n" +
 			"(stopping at the first error), any other file as a pg_dump archive with pg_restore.\n" +
 			"Objects keep the database's owner. The dump's extensions are not created by it: enable\n" +
@@ -881,12 +920,18 @@ func dbImportCmd(a *App) *cobra.Command {
 			"clauses naming other users, its GTIDs, its own database's name — and said so.\n\n" +
 			"--from-url: the database copies another one straight in from its URL (one on a VPS, at\n" +
 			"Heroku, Railway, RDS), nothing installed here; into an empty database, or --replace the\n" +
-			"tables the source has. A restore point is marked first, so it can be undone.",
+			"tables the source has. A restore point is marked first, so it can be undone.\n\n" +
+			"SQL Server: a .bak file (BACKUP DATABASE … TO DISK, from any SQL Server no newer than\n" +
+			"the database's), sent to its backup store and restored there as --database (default: its\n" +
+			"own database; a new name becomes another of its databases). --replace overwrites a\n" +
+			"database that holds tables. A restore point is marked first. An upload cut short\n" +
+			"carries on where it stopped when the same file is sent again; --cancel drops it.",
 		Example: "  mw db import loja-prod loja-prod-20261024.dump\n  mw db import loja-staging dump.sql\n" +
 			"  mw db import loja-wp wordpress.sql.gz\n" +
+			"  mw db import erp erp-2026-10-30.bak --database empresa2\n" +
 			"  mw db import loja-prod --from-url 'postgres://app:secret@old-vps.example.com:5432/loja?sslmode=require'",
 		Args: func(cmd *cobra.Command, args []string) error {
-			if fromURL != "" {
+			if fromURL != "" || cancelUpload {
 				return cobra.ExactArgs(1)(cmd, args)
 			}
 			return cobra.ExactArgs(2)(cmd, args)
@@ -898,6 +943,21 @@ func dbImportCmd(a *App) *cobra.Command {
 			}
 			if d.Engine == "valkey" {
 				return fmt.Errorf("%s is a Redis database: load data into it with your Redis client (`mw redis connect %s`)", d.Name, d.Name)
+			}
+			if isSQLServer(d.Engine) {
+				if fromURL != "" || clean {
+					return errors.New("a SQL Server database imports a .bak file: --from-url and --clean are for the other engines")
+				}
+				if cancelUpload {
+					return a.sqlServerCancelImport(cmd.Context(), d)
+				}
+				return a.sqlServerImport(cmd.Context(), d, args[1], intoDB, replace, detach)
+			}
+			if cancelUpload {
+				return errors.New("--cancel drops a SQL Server .bak upload")
+			}
+			if intoDB != "" {
+				return errors.New("--database is for SQL Server's .bak imports")
 			}
 			if fromURL != "" {
 				return a.importFromURL(cmd.Context(), d.Name, fromURL, replace, detach)
@@ -1010,7 +1070,9 @@ func dbImportCmd(a *App) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&fromURL, "from-url", "", "copy another database in from its URL, on the database's side")
-	cmd.Flags().BoolVar(&replace, "replace", false, "with --from-url: replace the tables the source has (else the database must be empty)")
+	cmd.Flags().BoolVar(&replace, "replace", false, "with --from-url: replace the tables the source has (else the database must be empty); SQL Server: overwrite a database that holds tables")
+	cmd.Flags().StringVar(&intoDB, "database", "", "SQL Server: the database to restore the .bak as (default: its own; a new name adds one)")
+	cmd.Flags().BoolVar(&cancelUpload, "cancel", false, "SQL Server: drop the .bak upload left open (what was sent of it is deleted)")
 	cmd.Flags().BoolVar(&detach, "detach", false, "with --from-url: start it and return (`mw db jobs` follows it)")
 	cmd.Flags().BoolVar(&clean, "clean", false, "drop the objects the archive creates before restoring them")
 	noTunnelFlag(a, cmd)

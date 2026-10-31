@@ -91,6 +91,7 @@ func TestDatabasesGoWhereAskedAndNeverWhereTheyCannot(t *testing.T) {
 	}
 
 	// A restore into another location, and the listing says where each runs.
+	f.answer("GET /v1/databases/loja-prod", 200, database("running"))
 	f.answer("POST /v1/databases/loja-prod/restore", 200, map[string]interface{}{"database": made, "password": "x"})
 	if _, _, err := run(t, srv, t.TempDir(), "db", "restore", "loja-prod", "--to", "loja-copia", "--location", "3", "--detach"); err != nil {
 		t.Fatal(err)

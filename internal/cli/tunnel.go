@@ -211,6 +211,9 @@ func dbTunnelCmd(a *App, engine string) *cobra.Command {
 			case d.Engine == "mariadb" && r.fingerprint != "":
 				// MariaDB's client checks the name whenever it has a CA: pin the certificate instead.
 				fmt.Fprintf(a.Out, "  mariadb -h 127.0.0.1 -P %d -u %s --ssl-fp=%s -p %s\n", r.port, conn.Username, r.fingerprint, str(conn.Database))
+			case isSQLServer(d.Engine):
+				// sqlcmd (Microsoft's ODBC one or the Go one) checks the certificate against -F while connecting to 127.0.0.1.
+				fmt.Fprintf(a.Out, "  sqlcmd -S tcp:127.0.0.1,%d -U %s -d %s -N -F %s\n", r.port, conn.Username, str(conn.Database), r.host)
 			case isMySQL(d.Engine):
 				fmt.Fprintf(a.Out, "  mysql -h 127.0.0.1 -P %d -u %s --ssl-mode=VERIFY_CA%s -p %s\n", r.port, conn.Username, mysqlCA, str(conn.Database))
 			default:

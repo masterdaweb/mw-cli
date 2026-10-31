@@ -14,6 +14,7 @@ func TestRestoreMakesANewDatabaseToAnInstantAndWaitsForIt(t *testing.T) {
 	f, srv := newFakeAPI(t)
 	made := database("provisioning")
 	made["name"] = "loja-ontem"
+	f.answer("GET /v1/databases/loja-prod", 200, database("running"))
 	f.answer("POST /v1/databases/loja-prod/restore", 200, map[string]interface{}{"database": made, "password": "Zq8sR2vX9pLm4TnB7wYc1KdH6gFj3eAu"})
 	var polls int32
 	f.on("GET /v1/databases/loja-ontem", func(w http.ResponseWriter, _ call) {
@@ -29,7 +30,7 @@ func TestRestoreMakesANewDatabaseToAnInstantAndWaitsForIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := jsonOf(t, f.last("POST /v1/databases/loja-prod/restore").Body)
-	if body["name"] != "loja-ontem" || body["target"] != "time" || body["time"] != "2026-10-24T21:30:00Z" {
+	if body["name"] != "loja-ontem" || body["target"] != "time" || body["time"] != "2026-10-24T21:30:00Z" || body["accept_terms"] != nil {
 		t.Fatalf("body %v", body)
 	}
 	for _, want := range []string{"Restoring loja-prod into loja-ontem", "Zq8sR2vX9pLm4TnB7wYc1KdH6gFj3eAu", "loja-ontem is restored"} {
