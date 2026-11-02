@@ -331,15 +331,29 @@ func (a *App) jobs(ctx context.Context, name string) ([]api.DatabaseJob, error) 
 	return jobs, c.Do(ctx, "GET", dbPath(name, "/jobs"), nil, nil, &jobs)
 }
 
-// waitJob follows one job until it ends.
+// waitJob follows one job until it ends. The job runs on the platform
+// whatever happens here: a poll that fails (the API restarting, the network
+// gone a moment) is tried again for a while, and leaving says how to follow it.
 func (a *App) waitJob(ctx context.Context, name, id string) (*api.DatabaseJob, error) {
 	ctx, cancel := context.WithTimeout(ctx, 6*time.Hour)
 	defer cancel()
 	last := ""
+	still := func() error {
+		if last == "" {
+			return fmt.Errorf("still pending: `mw db jobs %s` follows it", name)
+		}
+		return fmt.Errorf("still %s: `mw db jobs %s` follows it", last, name)
+	}
+	reached := time.Now()
 	for {
 		jobs, err := a.jobs(ctx, name)
-		if err != nil {
-			return nil, err
+		switch {
+		case ctx.Err() != nil:
+			return nil, still()
+		case err != nil && (permanent(err) || time.Since(reached) > 40*pollEvery):
+			return nil, fmt.Errorf("%w: the job carries on — `mw db jobs %s` follows it", err, name)
+		case err == nil:
+			reached = time.Now()
 		}
 		for i := range jobs {
 			j := &jobs[i]
@@ -359,7 +373,7 @@ func (a *App) waitJob(ctx context.Context, name, id string) (*api.DatabaseJob, e
 		}
 		select {
 		case <-ctx.Done():
-			return nil, fmt.Errorf("still %s: `mw db jobs %s` follows it", last, name)
+			return nil, still()
 		case <-time.After(pollEvery):
 		}
 	}
@@ -481,17 +495,6 @@ func (a *App) importFromURL(ctx context.Context, name, source string, replace, d
 	if a.JSON {
 		return a.print(done, nil)
 	}
-	if r := done.Report; r != nil {
-		a.printf("Imported: %d table(s) in %s.\n", r.Tables, name)
-		if r.LeftOut > 0 {
-			a.printf("%d statement(s) could not run and were left out:\n", r.LeftOut)
-			for _, n := range r.Notes {
-				a.printf("  %s\n", n)
-			}
-		}
-		if r.DefinersRemoved > 0 {
-			a.printf("Left out %d DEFINER clause(s): those views, routines and triggers now run as the owner.\n", r.DefinersRemoved)
-		}
-	}
+	a.printImportReport(name, str(job.Source), done)
 	return nil
 }

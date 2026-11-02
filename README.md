@@ -426,6 +426,9 @@ mw db url loja-prod --direct                 # the connection URL, for your own 
 mw db bind loja-prod --service web --layout framework   # DB_* variables, a login of its own
 mw db resize loja-prod --size pg-2-4         # a short restart; billed at the new size from now on
 mw db allow loja-prod 203.0.113.7            # let your office connect too
+mw db import loja-prod loja.sql.gz           # upload a dump; the database imports it (a restore point first)
+mw db import loja-prod loja.dump --replace   # pg_dump -Fc, replacing the tables it holds
+mw db import loja-prod --from-url "$OLD_DATABASE_URL"   # copy another database straight in
 ```
 
 `mw db connect` needs the database's client installed (`psql`, `mysql`,
@@ -434,7 +437,19 @@ need not allow your address; TLS stays between the client and the database,
 verified against the database's own name (`--no-tunnel` connects to its address
 instead, once `mw db allow` lets yours). The password reaches the client through
 its environment or a file only you can read, never its command line. `mw db
-export` and `mw db import` connect the same way.
+export` and `mw db import --local` connect the same way.
+
+`mw db import` sends a dump (`.sql`, `.sql.gz`; PostgreSQL also `pg_dump -Fc`)
+or SQL Server's `.bak` to the platform in parts, several at a time, and the
+database imports it itself — nothing to install, the same import as the
+console's, with its report (what was left out, and why). A restore point is
+marked first. An upload that stops (Ctrl-C, a dropped connection) carries on
+where it stopped when you run the same command again; `--cancel` drops it,
+`--detach` returns once the file is up (`mw db jobs` follows it). A file the
+database would refuse — UTF-16 text (Windows PowerShell's `>`), another
+compression than gzip, an image — and a database that already holds tables
+without `--replace` are refused before a byte is sent. `--local` runs your
+own `psql`, `pg_restore` or `mysql` against the database instead.
 
 ## Object Storage
 

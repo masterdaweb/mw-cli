@@ -905,34 +905,46 @@ func dbExportCmd(a *App) *cobra.Command {
 }
 
 func dbImportCmd(a *App) *cobra.Command {
-	var clean, replace, detach, cancelUpload bool
+	var clean, replace, detach, cancelUpload, local bool
 	var fromURL, intoDB string
 	cmd := &cobra.Command{
 		Use:   "import <name> <file> | import <name> --from-url <url> | import <name> --cancel",
-		Short: "Load a dump into a SQL database (psql, pg_restore, mysql or mariadb), or a SQL Server .bak",
-		Long: "Load a dump into a database. PostgreSQL, through its direct port: a .sql file with psql\n" +
-			"(stopping at the first error), any other file as a pg_dump archive with pg_restore.\n" +
-			"Objects keep the database's owner. The dump's extensions are not created by it: enable\n" +
-			"them first (`mw db extensions`), as you are told if one is missing. --clean first drops\n" +
-			"what an archive is about to create.\n\n" +
-			"MySQL and MariaDB: a .sql or .sql.gz dump from any server (mysqldump, mariadb-dump,\n" +
-			"another provider's export). What only its source server could run is left out — DEFINER\n" +
-			"clauses naming other users, its GTIDs, its own database's name — and said so.\n\n" +
+		Short: "Load a dump or a SQL Server .bak into a database, or copy another database in",
+		Long: "Load a file, or another database, into a SQL database.\n\n" +
+			"A FILE is uploaded to the database, which imports it itself: nothing to install here,\n" +
+			"as in the console. PostgreSQL takes a dump (.sql, .sql.gz, or pg_dump's custom format\n" +
+			".dump); MySQL and MariaDB a .sql or .sql.gz dump (mysqldump, mariadb-dump, another\n" +
+			"provider's export); SQL Server a .bak (BACKUP DATABASE … TO DISK), restored as --database\n" +
+			"(default: its own database; a new name becomes another of its databases). The file goes\n" +
+			"in parts, several at once; one cut short carries on where it stopped when the same file\n" +
+			"is sent again, and --cancel drops it. A restore point is marked first, so the import can\n" +
+			"be undone, and what of the dump could not run is reported. An import refuses a database\n" +
+			"that already holds tables unless --replace: a dump then drops what it creates before\n" +
+			"creating it, a .bak overwrites the database of its name. The file is uploaded where the\n" +
+			"backups are, so they must be on.\n\n" +
+			"--local runs your own client from this computer instead (psql or pg_restore, mysql or\n" +
+			"mariadb), through the platform's tunnel: for what only your client does. Objects keep the\n" +
+			"database's owner; the dump's extensions must be enabled first (`mw db extensions`); with\n" +
+			"--local, --clean is pg_restore's (otherwise it is --replace). `mw db connect <name> --\n" +
+			"<client options>` passes anything else, like pg_restore -j 8.\n\n" +
 			"--from-url: the database copies another one straight in from its URL (one on a VPS, at\n" +
 			"Heroku, Railway, RDS), nothing installed here; into an empty database, or --replace the\n" +
-			"tables the source has. A restore point is marked first, so it can be undone.\n\n" +
-			"SQL Server: a .bak file (BACKUP DATABASE … TO DISK, from any SQL Server no newer than\n" +
-			"the database's), sent to its backup store and restored there as --database (default: its\n" +
-			"own database; a new name becomes another of its databases). --replace overwrites a\n" +
-			"database that holds tables. A restore point is marked first. An upload cut short\n" +
-			"carries on where it stopped when the same file is sent again; --cancel drops it.",
-		Example: "  mw db import loja-prod loja-prod-20261024.dump\n  mw db import loja-staging dump.sql\n" +
+			"tables the source has. A restore point is marked first, so it can be undone.",
+		Example: "  mw db import loja-prod loja-prod-20261024.dump\n  mw db import loja-staging dump.sql --replace\n" +
 			"  mw db import loja-wp wordpress.sql.gz\n" +
 			"  mw db import erp erp-2026-10-30.bak --database empresa2\n" +
+			"  mw db import loja-prod loja-prod-20261024.dump --local\n" +
 			"  mw db import loja-prod --from-url 'postgres://app:secret@old-vps.example.com:5432/loja?sslmode=require'",
 		Args: func(cmd *cobra.Command, args []string) error {
-			if fromURL != "" || cancelUpload {
+			switch {
+			case fromURL != "" && len(args) == 2:
+				return errors.New("--from-url copies from the URL: leave the file out, or import the file without --from-url")
+			case cancelUpload && len(args) == 2:
+				return errors.New("--cancel drops the upload left open: name the database alone")
+			case fromURL != "" || cancelUpload:
 				return cobra.ExactArgs(1)(cmd, args)
+			case len(args) == 1:
+				return fmt.Errorf("which file? `mw db import %s <file>` (or --from-url <url>, or --cancel)", args[0])
 			}
 			return cobra.ExactArgs(2)(cmd, args)
 		},
@@ -944,139 +956,158 @@ func dbImportCmd(a *App) *cobra.Command {
 			if d.Engine == "valkey" {
 				return fmt.Errorf("%s is a Redis database: load data into it with your Redis client (`mw redis connect %s`)", d.Name, d.Name)
 			}
-			if isSQLServer(d.Engine) {
-				if fromURL != "" || clean {
-					return errors.New("a SQL Server database imports a .bak file: --from-url and --clean are for the other engines")
+			sqlServer := isSQLServer(d.Engine)
+			switch {
+			case cancelUpload:
+				if local || replace || clean || intoDB != "" {
+					return errors.New("--cancel drops the upload left open, and takes no other flag")
 				}
-				if cancelUpload {
-					return a.sqlServerCancelImport(cmd.Context(), d)
+				return a.cancelImportUpload(cmd.Context(), d)
+			case fromURL != "":
+				if sqlServer {
+					return errors.New("a SQL Server database imports a .bak file: --from-url is for the other engines")
 				}
-				return a.sqlServerImport(cmd.Context(), d, args[1], intoDB, replace, detach)
-			}
-			if cancelUpload {
-				return errors.New("--cancel drops a SQL Server .bak upload")
-			}
-			if intoDB != "" {
-				return errors.New("--database is for SQL Server's .bak imports")
-			}
-			if fromURL != "" {
+				if local || clean || intoDB != "" {
+					return errors.New("--from-url copies on the database's side: --local, --clean and --database are for files")
+				}
 				return a.importFromURL(cmd.Context(), d.Name, fromURL, replace, detach)
-			}
-			if replace {
-				return errors.New("--replace is for --from-url; for a file, --clean (pg_dump archives) or the dump's own DROP statements")
-			}
-			file := args[1]
-			if _, err := os.Stat(file); err != nil {
-				return err
-			}
-			if isMySQL(d.Engine) {
-				lower := strings.ToLower(file)
-				if !strings.HasSuffix(lower, ".sql") && !strings.HasSuffix(lower, ".sql.gz") {
-					return fmt.Errorf("a %s dump is SQL: a .sql or .sql.gz file", engineName(d.Engine))
+			case local:
+				if sqlServer {
+					return errors.New("a .bak is restored by the database itself: --local is for PostgreSQL, MySQL and MariaDB dumps")
 				}
-				if clean {
-					return errors.New("--clean is for pg_dump archives; a SQL dump drops what it says itself")
+				if replace || detach || intoDB != "" {
+					return errors.New("--local runs your own client: --replace, --detach and --database are for the database's own import (--clean is pg_restore's)")
 				}
-				a.printf("Importing %s into %s…\n", file, d.Name)
-				if err := a.mysqlImport(cmd.Context(), d, file); err != nil {
-					var exit *exitError
-					if errors.As(err, &exit) {
-						exit.msg = ""
-					}
-					return err
-				}
-				a.printf("Imported into %s.\n", d.Name)
-				return nil
+				return a.localImport(cmd.Context(), d, args[1], clean)
 			}
-			sql := strings.HasSuffix(strings.ToLower(file), ".sql")
-			if sql && clean {
-				return errors.New("--clean is for pg_dump archives; a .sql file drops what it says itself")
+			if intoDB != "" && !sqlServer {
+				return fmt.Errorf("--database is for SQL Server's .bak: a dump goes into %s's own database", d.Name)
 			}
-			client := "pg_restore"
-			if sql {
-				client = "psql"
+			if clean && sqlServer {
+				return errors.New("--clean is for dumps: a .bak overwrites the database of its name with --replace")
 			}
-			bin, err := pgClient(client)
-			if err != nil {
-				return err
-			}
-
-			// What goes in, without the extensions' own statements.
-			var wanted []string
-			var stdin io.Reader
-			var cargs []string
-			if sql {
-				f, err := os.Open(file)
-				if err != nil {
-					return err
-				}
-				var filtered bytes.Buffer
-				wanted, err = filterSQL(f, &filtered)
-				f.Close()
-				if err != nil {
-					return err
-				}
-				stdin = &filtered
-			} else {
-				listed, err := exec.CommandContext(cmd.Context(), bin, "--list", file).Output()
-				if err != nil {
-					return fmt.Errorf("%s is not a pg_dump archive pg_restore can read (a plain dump must end in .sql)", file)
-				}
-				var kept string
-				kept, wanted = filterArchiveList(string(listed))
-				list, err := os.CreateTemp("", "mw-restore-*.list")
-				if err != nil {
-					return err
-				}
-				defer os.Remove(list.Name())
-				if _, err := list.WriteString(kept); err != nil {
-					list.Close()
-					return err
-				}
-				if err := list.Close(); err != nil {
-					return err
-				}
-				cargs = []string{"--no-owner", "--no-privileges", "--exit-on-error", "--use-list", list.Name()}
-				if clean {
-					cargs = append(cargs, "--clean", "--if-exists")
-				}
-			}
-			if missing := missingExtensions(wanted, d.Extensions); len(missing) > 0 {
-				return fmt.Errorf("the dump uses %s, which %s does not have yet: `mw db extensions %s %s` (on within a minute), then import again",
-					strings.Join(missing, ", "), d.Name, d.Name, strings.Join(missing, " "))
-			}
-
-			pg, err := a.pgSessionFor(cmd.Context(), d, bin, false)
-			if err != nil {
-				return err
-			}
-			defer pg.cleanup()
-			if sql {
-				cargs = []string{"--set", "ON_ERROR_STOP=1", "--quiet", "--file", "-", pg.dsn}
-			} else {
-				cargs = append(cargs, "--dbname", pg.dsn, file)
-			}
-			a.printf("Importing %s into %s…\n", file, d.Name)
-			if err := a.runClient(cmd.Context(), d, bin, cargs, pg.env, stdin); err != nil {
-				var exit *exitError
-				if errors.As(err, &exit) {
-					// The client said what failed: a statement, not the connection.
-					exit.msg = ""
-				}
-				return err
-			}
-			a.printf("Imported into %s.\n", d.Name)
-			return nil
+			return a.fileImport(cmd.Context(), d, args[1], fileImportOptions{database: intoDB, replace: replace || clean, detach: detach})
 		},
 	}
 	cmd.Flags().StringVar(&fromURL, "from-url", "", "copy another database in from its URL, on the database's side")
-	cmd.Flags().BoolVar(&replace, "replace", false, "with --from-url: replace the tables the source has (else the database must be empty); SQL Server: overwrite a database that holds tables")
+	cmd.Flags().BoolVar(&replace, "replace", false, "a dump: drop what it creates before creating it; a .bak: overwrite the database of its name; --from-url: replace the tables the source has (otherwise the database must hold none)")
 	cmd.Flags().StringVar(&intoDB, "database", "", "SQL Server: the database to restore the .bak as (default: its own; a new name adds one)")
-	cmd.Flags().BoolVar(&cancelUpload, "cancel", false, "SQL Server: drop the .bak upload left open (what was sent of it is deleted)")
-	cmd.Flags().BoolVar(&detach, "detach", false, "with --from-url: start it and return (`mw db jobs` follows it)")
-	cmd.Flags().BoolVar(&clean, "clean", false, "drop the objects the archive creates before restoring them")
+	cmd.Flags().BoolVar(&cancelUpload, "cancel", false, "drop the upload left open (what was sent of it is deleted, nothing is imported)")
+	cmd.Flags().BoolVar(&detach, "detach", false, "start the import and return (`mw db jobs` follows it)")
+	cmd.Flags().BoolVar(&local, "local", false, "import with your own client from this computer (psql, pg_restore, mysql or mariadb) instead of on the database's side")
+	cmd.Flags().BoolVar(&clean, "clean", false, "the same as --replace; with --local, pg_restore's --clean")
 	noTunnelFlag(a, cmd)
 	return cmd
+}
+
+// localImport loads a dump with the person's own client from this computer,
+// through the platform's tunnel (or the database's address with --no-tunnel):
+// psql for a .sql file (stopping at the first error), pg_restore for any
+// other PostgreSQL file, mysql or mariadb for a MySQL or MariaDB dump. The
+// dump's extension statements are left out (the database's own come from
+// `mw db extensions`), and what only its source server could run.
+func (a *App) localImport(ctx context.Context, d *api.Database, file string, clean bool) error {
+	if _, err := os.Stat(file); err != nil {
+		return err
+	}
+	if isMySQL(d.Engine) {
+		lower := strings.ToLower(file)
+		if !strings.HasSuffix(lower, ".sql") && !strings.HasSuffix(lower, ".sql.gz") {
+			return fmt.Errorf("a %s dump is SQL: a .sql or .sql.gz file", engineName(d.Engine))
+		}
+		if clean {
+			return errors.New("--clean is for pg_dump archives; a SQL dump drops what it says itself")
+		}
+		a.printf("Importing %s into %s…\n", file, d.Name)
+		if err := a.mysqlImport(ctx, d, file); err != nil {
+			var exit *exitError
+			if errors.As(err, &exit) {
+				exit.msg = ""
+			}
+			return err
+		}
+		a.printf("Imported into %s.\n", d.Name)
+		return nil
+	}
+	sql := strings.HasSuffix(strings.ToLower(file), ".sql")
+	if sql && clean {
+		return errors.New("--clean is for pg_dump archives; a .sql file drops what it says itself")
+	}
+	client := "pg_restore"
+	if sql {
+		client = "psql"
+	}
+	bin, err := pgClient(client)
+	if err != nil {
+		return err
+	}
+
+	// What goes in, without the extensions' own statements.
+	var wanted []string
+	var stdin io.Reader
+	var cargs []string
+	if sql {
+		f, err := os.Open(file)
+		if err != nil {
+			return err
+		}
+		var filtered bytes.Buffer
+		wanted, err = filterSQL(f, &filtered)
+		f.Close()
+		if err != nil {
+			return err
+		}
+		stdin = &filtered
+	} else {
+		listed, err := exec.CommandContext(ctx, bin, "--list", file).Output()
+		if err != nil {
+			return fmt.Errorf("%s is not a pg_dump archive pg_restore can read (a plain dump must end in .sql)", file)
+		}
+		var kept string
+		kept, wanted = filterArchiveList(string(listed))
+		list, err := os.CreateTemp("", "mw-restore-*.list")
+		if err != nil {
+			return err
+		}
+		defer os.Remove(list.Name())
+		if _, err := list.WriteString(kept); err != nil {
+			list.Close()
+			return err
+		}
+		if err := list.Close(); err != nil {
+			return err
+		}
+		cargs = []string{"--no-owner", "--no-privileges", "--exit-on-error", "--use-list", list.Name()}
+		if clean {
+			cargs = append(cargs, "--clean", "--if-exists")
+		}
+	}
+	if missing := missingExtensions(wanted, d.Extensions); len(missing) > 0 {
+		return fmt.Errorf("the dump uses %s, which %s does not have yet: `mw db extensions %s %s` (on within a minute), then import again",
+			strings.Join(missing, ", "), d.Name, d.Name, strings.Join(missing, " "))
+	}
+
+	pg, err := a.pgSessionFor(ctx, d, bin, false)
+	if err != nil {
+		return err
+	}
+	defer pg.cleanup()
+	if sql {
+		cargs = []string{"--set", "ON_ERROR_STOP=1", "--quiet", "--file", "-", pg.dsn}
+	} else {
+		cargs = append(cargs, "--dbname", pg.dsn, file)
+	}
+	a.printf("Importing %s into %s…\n", file, d.Name)
+	if err := a.runClient(ctx, d, bin, cargs, pg.env, stdin); err != nil {
+		var exit *exitError
+		if errors.As(err, &exit) {
+			// The client said what failed: a statement, not the connection.
+			exit.msg = ""
+		}
+		return err
+	}
+	a.printf("Imported into %s.\n", d.Name)
+	return nil
 }
 
 // exitError ends the CLI with a client's exit code; its own message, if
