@@ -68,6 +68,9 @@ func Pack(dir string, maxBytes int64) (*Result, error) {
 	gz, _ := gzip.NewWriterLevel(counted, gzip.BestCompression)
 	tw := tar.NewWriter(gz)
 
+	// What is written first, ahead of the walk: the folder's settings file, so
+	// whoever reads the archive for it finds it in its first block.
+	first := ""
 	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -79,8 +82,18 @@ func Pack(dir string, maxBytes int64) (*Result, error) {
 		rel = filepath.ToSlash(rel)
 		if rel == "." {
 			if useGit {
-				return addGitignore(&rules, p, "", res)
+				if err := addGitignore(&rules, p, "", res); err != nil {
+					return err
+				}
 			}
+			// Now that the root's rules are read: the settings file, unless they leave it out.
+			if st, err := os.Lstat(filepath.Join(root, ConfigFile)); err == nil && st.Mode().IsRegular() && !ignored(rules, ConfigFile, false) {
+				first = ConfigFile
+				return addFile(tw, filepath.Join(root, ConfigFile), ConfigFile, st, res)
+			}
+			return nil
+		}
+		if rel == first {
 			return nil
 		}
 		if alwaysLeftOut(rel) || ignored(rules, rel, d.IsDir()) {
@@ -106,6 +119,9 @@ func Pack(dir string, maxBytes int64) (*Result, error) {
 		} else if !info.Mode().IsRegular() && !info.IsDir() {
 			return nil // sockets, devices, pipes: nothing a build reads
 		}
+		if info.Mode().IsRegular() {
+			return addFile(tw, p, rel, info, res)
+		}
 		h, err := tar.FileInfoHeader(info, link)
 		if err != nil {
 			return err
@@ -114,26 +130,8 @@ func Pack(dir string, maxBytes int64) (*Result, error) {
 		if info.IsDir() {
 			h.Name += "/"
 		}
-		// Whose files they were on this machine means nothing to the build;
-		// whole seconds keep every header plain ustar (PAX only for long names).
-		h.Uid, h.Gid, h.Uname, h.Gname = 0, 0, "", ""
-		h.ModTime = info.ModTime().Truncate(time.Second)
-		if err := tw.WriteHeader(h); err != nil {
-			return err
-		}
-		if info.Mode().IsRegular() {
-			f, err := os.Open(p)
-			if err != nil {
-				return err
-			}
-			_, err = io.Copy(tw, f)
-			f.Close()
-			if err != nil {
-				return err
-			}
-			res.Files++
-		}
-		return nil
+		plain(h, info)
+		return tw.WriteHeader(h)
 	})
 	if err == nil {
 		err = tw.Close()
@@ -156,6 +154,42 @@ func Pack(dir string, maxBytes int64) (*Result, error) {
 		return nil, fmt.Errorf("nothing to deploy: %s has no files (or its ignore rules leave all of them out)", dir)
 	}
 	return res, nil
+}
+
+// ConfigFile is the folder's settings file (the port, the commands, the
+// size): packed first.
+const ConfigFile = "mw.toml"
+
+// plain strips from a header what means nothing to the build: whose files
+// they were on this machine. Whole seconds keep every header plain ustar (PAX
+// only for long names).
+func plain(h *tar.Header, info fs.FileInfo) {
+	h.Uid, h.Gid, h.Uname, h.Gname = 0, 0, "", ""
+	h.ModTime = info.ModTime().Truncate(time.Second)
+}
+
+// addFile writes one regular file, at p, into the archive as rel.
+func addFile(tw *tar.Writer, p, rel string, info fs.FileInfo, res *Result) error {
+	h, err := tar.FileInfoHeader(info, "")
+	if err != nil {
+		return err
+	}
+	h.Name = rel
+	plain(h, info)
+	if err := tw.WriteHeader(h); err != nil {
+		return err
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(tw, f)
+	f.Close()
+	if err != nil {
+		return err
+	}
+	res.Files++
+	return nil
 }
 
 func addGitignore(rules *[]rule, dir, rel string, res *Result) error {

@@ -227,24 +227,82 @@ mw security settings set --frequency monthly
 
 ```sh
 cd my-app
-mw init                    # a project and a service for this folder, and a link to it
-mw deploy                  # packs the folder, sends it, follows the build until it is live
+mw deploy                  # the first time: makes the service from this folder, then deploys it
 ```
 
-`mw init` names both after the folder (`--project`, `--name`, `--kind`,
-`--port` choose otherwise; a cron job, `--kind cron`, also takes its
-`--schedule`, and `--timezone` when it is not the platform's default). The
-folder is linked in `.mw/link.json`, so every
-command run inside it acts on that service without `--service`.
+```text
+No service was made from this folder yet.
+  Found a Node.js app (package.json): built as detected, no Dockerfile needed.
+Make the service "my-app" (web, in the project "my-app") and deploy this folder? [Y/n]
+Service my-app created in project my-app, and this folder linked to it (.mw/link.json).
+Packing /home/ana/my-app…
+Uploading 3.2 MB (412 files, leaving out what .gitignore says)…
+Deployment #1 of my-app:
+  source        succeeded
+  build         running
+  │ #8 npm ci
+  │ #8 DONE 21.4s
+  build         succeeded in 1m 12s
+  health check  succeeded in 6s
+  traffic       succeeded
+Deployment #1 is live in 1m 28s: https://my-app-k3x9wd.bh.meu-app.net
+```
+
+One command from a folder to an address. It says what it found (a Dockerfile,
+or the language it will build as), asks once, and from then on `mw deploy`
+there is just a deployment. A Dockerfile that says `EXPOSE 9000` makes a
+service that listens on 9000 (`--port`, or an `mw.toml`, says otherwise). `--yes` answers for a script. The build's output
+comes as it builds (`--no-build-log`: the steps alone), each step says how
+long it took, and a failure ends with why, what to do and the app's last
+lines.
+
+`Ctrl+C` stops the following, never the deployment: `mw deployments follow`
+picks it up again (it also follows one a push or the console started, and
+exits non-zero when it did not go live — a pipeline can wait on it). A follow
+that loses the API for a while keeps trying: the deployment runs on the
+platform, not in your terminal.
+
+`mw init` makes the service without deploying it, when the folder's name is
+not the one you want: `--project`, `--name`, `--kind`, `--port`, `--size`,
+`--max-instances`, `--min-instances`, `--instances` (workers), `--location`;
+a cron job, `--kind cron`, also takes its `--schedule`, and `--timezone` when
+it is not the platform's default. The folder is linked in `.mw/link.json`, so
+every command run inside it acts on that service without `--service`.
 
 What is sent: the folder minus what its `.mwignore` says, or else what its
 `.gitignore` files say (each for its own directory), in git's syntax. `.git`
 and `.mw` are never sent. The archive must fit the size the platform takes;
 leave dependencies and build output out.
 
+Settings can live in the folder, next to the code they describe: an `mw.toml`
+at its root sets the port, the commands, the health check, the size and the
+scaling, and is applied by each deployment — as it is for a repository. What
+the file sets is changed in the file (the console shows it read-only); a
+mistake in it fails the deployment at its first step, with the line.
+
+```toml
+[deploy]
+port = 3000
+start_command = "node dist/main.js"
+release_command = "npx prisma migrate deploy"
+health_check_path = "/healthz"
+
+[scaling]
+size = "small"
+max_instances = 3
+```
+
+Without the file, the same from the terminal:
+
+```sh
+mw services update --port 3000 --health-check-path /healthz   # applied with a new deployment
+mw services update --start-command "node dist/main.js" --no-deploy
+```
+
 Services built from Git deploy their branch instead (`mw deploy`, or
 `mw deploy --ref v1.4.2`); services that run an image deploy a new one
-(`mw deploy --image ghcr.io/acme/api:1.5`).
+(`mw deploy --image ghcr.io/acme/api:1.5`). `mw services create` — from a
+repository or an image — follows its first deployment the same way.
 
 ## Publish a repository
 
@@ -286,10 +344,12 @@ console.
 
 ```sh
 mw status                         # state, address, instances, last deployment
+mw open                           # its address, in the browser
 mw logs -f                        # the logs, as they come
 mw logs --access --status 5xx     # the requests it answered: method, status, path, time taken
 mw metrics --range 24h            # requests, errors, response times, instances, CPU, memory
 mw deployments                    # deployments; --revisions for what a rollback can go back to
+mw deployments follow             # the one under way (or the latest), to its end
 mw deployments cancel             # stop the deployment under way (before its release)
 mw rollback 3                     # back to revision 3, at once, without a build
 mw redeploy --no-cache            # build the same code again

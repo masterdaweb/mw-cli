@@ -243,6 +243,21 @@ func (c *Client) send(ctx context.Context, h *http.Client, method, path string, 
 		}
 		res, err := h.Do(req)
 		done()
+		// A read that met a gateway between two instances of the API (502, 503,
+		// 504), or a connection that dropped, is asked again a few times: it
+		// changes nothing, and the next answer is usually the real one.
+		safe := method == http.MethodGet || method == http.MethodHead
+		if safe && attempt < TransientRetries && ctx.Err() == nil && passing(res, err) {
+			if res != nil {
+				res.Body.Close()
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(TransientWait << attempt):
+			}
+			continue
+		}
 		if err != nil {
 			return fmt.Errorf("could not reach %s: %w", c.BaseURL, err)
 		}
@@ -261,6 +276,32 @@ func (c *Client) send(ctx context.Context, h *http.Client, method, path string, 
 		defer res.Body.Close()
 		return read(res)
 	}
+}
+
+// TransientRetries is how many times a read is asked again after an answer
+// that says nothing of what was asked (a gateway's 502 or 504, a dropped
+// connection), TransientWait the first wait, doubled each time.
+var (
+	TransientRetries = 3
+	TransientWait    = 500 * time.Millisecond
+)
+
+// passing: a gateway's own answer, or a connection that failed at once. A
+// request that ran into its time limit is not asked again here: the caller
+// has waited long enough, and decides.
+func passing(res *http.Response, err error) bool {
+	if err != nil {
+		var timeout interface{ Timeout() bool }
+		return !(errors.As(err, &timeout) && timeout.Timeout())
+	}
+	switch res.StatusCode {
+	case http.StatusBadGateway, http.StatusGatewayTimeout:
+		return true
+	case http.StatusServiceUnavailable:
+		// With a Retry-After the API says when: retryAfter waits as told.
+		return strings.TrimSpace(res.Header.Get("Retry-After")) == ""
+	}
+	return false
 }
 
 // retryAfter is how long to wait before sending a refused request again, and

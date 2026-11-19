@@ -115,6 +115,7 @@ func runWithInput(t *testing.T, srv *httptest.Server, dir, input string, args ..
 	t.Setenv("MW_TOKEN", "mwk_test")
 	t.Setenv("MW_API_URL", srv.URL)
 	pollEvery = 10 * time.Millisecond
+	api.TransientWait = time.Millisecond
 	var out, errOut bytes.Buffer
 	a := &App{Version: "test", In: strings.NewReader(input), Out: &out, Err: &errOut, Dir: dir}
 	root := NewRoot(a)
@@ -132,6 +133,11 @@ func service(kind, source string) map[string]interface{} {
 		"source":   map[string]interface{}{"kind": source},
 		"settings": map[string]interface{}{"vcpu_millis": 500, "memory_mib": 1024, "min_instances": 0, "max_instances": 3},
 	}
+}
+
+// wallet is a serverless wallet holding `usable` µ¢, where a new service needs R$ 50.
+func wallet(usable string) map[string]interface{} {
+	return map[string]interface{}{"subscription_id": "sub-1", "status": "active", "usable_micro_cents": usable, "minimum_for_new_service_micro_cents": "50000000", "debt_limit_micro_cents": "0"}
 }
 
 func page(items ...interface{}) map[string]interface{} {
@@ -541,6 +547,7 @@ func TestInitMakesTheProjectTheServiceAndTheLink(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "Minha Loja")
 	_ = os.Mkdir(dir, 0o755)
 	f.answer("GET /v1/serverless/projects", 200, page())
+	f.answer("GET /v1/serverless/wallet", 200, wallet("60000000"))
 	f.answer("POST /v1/serverless/projects", 200, map[string]interface{}{"id": "0193f0e2-2222-7000-8000-000000000009", "name": "minha-loja"})
 	f.answer("POST /v1/serverless/projects/0193f0e2-2222-7000-8000-000000000009/services", 200, map[string]interface{}{"service": service("WEB", "UPLOAD")})
 	if _, _, err := run(t, srv, dir, "init", "--port", "3000"); err != nil {
@@ -901,6 +908,8 @@ func TestServicesCreateBuildsFromARepository(t *testing.T) {
 		{"id": "c1", "provider": "GITHUB", "account_login": "ana", "status": "ACTIVE"},
 	})
 	created := map[string]interface{}{"service": service("WEB", "GIT"), "deployment": map[string]interface{}{"id": "d1", "number": 1, "status": "BUILDING"}}
+	// The first deployment is followed to its end, as `mw deploy` does.
+	f.answer("GET /v1/serverless/deployments/d1", 200, deployment("d1", 1, "LIVE"))
 	f.on("POST /v1/serverless/projects/"+pid+"/services", func(w http.ResponseWriter, c call) {
 		var b struct {
 			Source struct {
@@ -930,8 +939,13 @@ func TestServicesCreateBuildsFromARepository(t *testing.T) {
 	if src["kind"] != "GIT" || git["provider"] != "GITHUB" || git["connection_id"] != "c1" || git["repo_full_name"] != "ana/loja" || git["branch"] != "main" {
 		t.Fatalf("sent %v", src)
 	}
-	if !strings.Contains(out, "Deployment #1 started") {
+	if !strings.Contains(out, "Service web created in loja.") || !strings.Contains(out, "Deployment #1 of web:") || !strings.Contains(out, "Deployment #1 is live") {
 		t.Fatalf("out: %s", out)
+	}
+	// --detach returns once it is made, saying how to follow.
+	out, _, err = run(t, srv, t.TempDir(), "services", "create", "api", "--project", "loja", "--repo", "ana/loja", "--detach")
+	if err != nil || !strings.Contains(out, "Deployment #1 of web queued: `mw deployments follow --service web` follows it.") || strings.Contains(out, "is live") {
+		t.Fatalf("detached: %v %s", err, out)
 	}
 	// Someone else's public repository: read as public when the account cannot see it.
 	if _, _, err := run(t, srv, t.TempDir(), "services", "create", "site", "--project", "loja", "--repo", "https://github.com/laravel/laravel"); err != nil {

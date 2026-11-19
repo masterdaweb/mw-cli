@@ -319,9 +319,10 @@ func servicesCmd(a *App) *cobra.Command {
 
 	var (
 		image, kind, repo, branch, provider, connection, registry, volume string
-		schedule, timezone                                                string
-		port                                                              int
+		schedule, timezone, sizeCode                                      string
+		port, minInstances, maxInstances, instances                       int
 		envs                                                              []string
+		createRun                                                         deployRun
 	)
 	create := &cobra.Command{
 		Use:   "create <name>",
@@ -331,6 +332,7 @@ func servicesCmd(a *App) *cobra.Command {
 			"every push deploys; or the https address of a public one): built from its code.\n" +
 			"From an image (--image nginx:1.27): run as it is; the paths it keeps data in that no volume\n" +
 			"holds are named once it is made.\n" +
+			"The first deployment is followed to its end, as `mw deploy` does (--detach: not waited for).\n" +
 			"--volume /data:5 gives it a persistent volume of 5 GB at /data (it then runs one instance).\n" +
 			"A whole app with its databases at once: `mw launch`.",
 		Example: "  mw services create api --project loja --repo ana/loja --branch main\n" +
@@ -356,9 +358,24 @@ func servicesCmd(a *App) *cobra.Command {
 					return errors.New("a cron job cannot have a volume: give one to the service that keeps the data")
 				}
 			}
-			cron, err := cronSettings(kind, schedule, timezone)
+			// The settings `mw init` takes, checked the same way (a cron job
+			// without a schedule, scaling given to the wrong kind).
+			starts := folderService{kind: kind, schedule: schedule, timezone: timezone, port: port, size: sizeCode}
+			if cmd.Flags().Changed("min-instances") {
+				starts.minInstances = &minInstances
+			}
+			if cmd.Flags().Changed("max-instances") {
+				starts.maxInstances = &maxInstances
+			}
+			if cmd.Flags().Changed("instances") {
+				starts.instances = &instances
+			}
+			settings, err := starts.settings()
 			if err != nil {
 				return err
+			}
+			if settings == nil {
+				settings = map[string]interface{}{}
 			}
 			p, err := a.resolveProject(cmd.Context(), project)
 			if err != nil {
@@ -395,13 +412,6 @@ func servicesCmd(a *App) *cobra.Command {
 				"name":   args[0],
 				"kind":   strings.ToUpper(kind),
 				"source": source,
-			}
-			settings := map[string]interface{}{}
-			for k, v := range cron {
-				settings[k] = v
-			}
-			if port > 0 {
-				settings["port"] = port
 			}
 			if mount != "" {
 				settings["volume_mount_path"], settings["volume_size_gb"] = mount, size
@@ -450,15 +460,17 @@ func servicesCmd(a *App) *cobra.Command {
 					fmt.Fprintln(a.Err, h)
 				}
 			}
-			return a.print(out, func(w *tabwriter.Writer) {
+			if err := a.print(out, func(w *tabwriter.Writer) {
 				fmt.Fprintf(w, "Service %s created in %s.\n", out.Service.Name, p.Name)
-				if out.Deployment != nil {
-					fmt.Fprintf(w, "Deployment #%d started: `mw logs --service %s` follows it.\n", out.Deployment.Number, out.Service.Name)
-				}
 				for _, h := range hints {
 					fmt.Fprintln(w, h)
 				}
-			})
+			}); err != nil || a.JSON || out.Deployment == nil {
+				return err
+			}
+			// Its first deployment, followed to its end as `mw deploy` does.
+			createRun.first = true
+			return a.started(cmd, &out.Service, out.Deployment, createRun)
 		},
 	}
 	create.Flags().StringVar(&project, "project", "", "the project to create it in")
@@ -472,59 +484,106 @@ func servicesCmd(a *App) *cobra.Command {
 	create.Flags().StringVar(&schedule, "schedule", "", "cron jobs: when it runs, a cron expression like '*/15 * * * *'")
 	create.Flags().StringVar(&timezone, "timezone", "", "cron jobs: the schedule's time zone, e.g. America/Sao_Paulo (the platform's default when not given)")
 	create.Flags().IntVar(&port, "port", 0, "the port the app listens on (web and private)")
+	create.Flags().StringVar(&sizeCode, "size", "", "an instance size: x-small, small, medium or large (default: small)")
+	create.Flags().IntVar(&minInstances, "min-instances", 0, "web and private: instances kept on without traffic (default 0: it sleeps)")
+	create.Flags().IntVar(&maxInstances, "max-instances", 0, "web and private: the most instances it scales to (what the account's limits reserve)")
+	create.Flags().IntVar(&instances, "instances", 0, "workers: how many run")
+	create.Flags().BoolVar(&createRun.detach, "detach", false, "do not wait for the first deployment to finish")
+	create.Flags().BoolVar(&createRun.noBuildLog, "no-build-log", false, "follow the steps alone, without what the build prints")
 	create.Flags().StringArrayVar(&envs, "env", nil, "a variable, KEY=value (repeat)")
 	create.Flags().StringVar(&volume, "volume", "", "a persistent volume, PATH:GB like /data:5 (the service then runs one instance)")
 	cmd.AddCommand(create)
 
-	var protectService bool
-	var rolloutPercent, rolloutMinutes int
+	var protectService, updateNoDeploy bool
+	var rolloutPercent, rolloutMinutes, updatePort, startupTimeout int
+	var startCommand, buildCommand, releaseCommand, healthPath, dockerfile string
 	updateService := &cobra.Command{
-		Use:   "update <service>",
-		Short: "Change a service's deletion protection, or how its new versions take traffic",
-		Long: "--rollout 10 makes a web or private service's new versions take 10% of the requests first,\n" +
+		Use:   "update [service]",
+		Short: "Change a service's port, commands, health check, deletion protection or gradual rollout",
+		Long: "Change what a service runs with: the port the app listens on, the commands that build,\n" +
+			"start and release it, the path its health check asks, how long it may take to start. They\n" +
+			"are applied with a new deployment (--no-deploy: saved for the next one); \"\" clears a\n" +
+			"command or the health check path. Without a name it is the service this directory is linked\n" +
+			"to. What the repository's or the folder's mw.toml sets is changed there, not here.\n\n" +
+			"--rollout 10 makes a web or private service's new versions take 10% of the requests first,\n" +
 			"for --rollout-minutes (default 10), and all of them only if they stay healthy; 0 turns it off.\n" +
-			"It applies from the next deployment.",
-		Example: "  mw services update web --deletion-protection=true\n  mw services update web --rollout 10 --rollout-minutes 15",
-		Args:    cobra.ExactArgs(1),
+			"It applies from the next deployment. Size and scaling: `mw scale`.",
+		Example: "  mw services update --port 3000\n" +
+			"  mw services update web --start-command \"node dist/main.js\" --health-check-path /healthz\n" +
+			"  mw services update web --release-command \"npx prisma migrate deploy\" --no-deploy\n" +
+			"  mw services update web --deletion-protection=true\n  mw services update web --rollout 10 --rollout-minutes 15",
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			rollout := cmd.Flags().Changed("rollout") || cmd.Flags().Changed("rollout-minutes")
-			if !cmd.Flags().Changed("deletion-protection") && !rollout {
-				return errors.New("nothing to change: pass --deletion-protection or --rollout")
+			flags := cmd.Flags()
+			rollout := flags.Changed("rollout") || flags.Changed("rollout-minutes")
+			// What the service runs with: applied with a deployment.
+			runs := map[string]interface{}{}
+			text := func(flag, field, value string) {
+				if !flags.Changed(flag) {
+					return
+				}
+				if strings.TrimSpace(value) == "" {
+					runs[field] = nil
+				} else {
+					runs[field] = value
+				}
 			}
-			s, err := a.resolveService(cmd.Context(), args[0], project)
+			if flags.Changed("port") {
+				runs["port"] = updatePort
+			}
+			if flags.Changed("startup-timeout") {
+				runs["startup_timeout_seconds"] = startupTimeout
+			}
+			text("start-command", "start_command", startCommand)
+			text("build-command", "build_command", buildCommand)
+			text("release-command", "release_command", releaseCommand)
+			text("health-check-path", "health_check_path", healthPath)
+			text("dockerfile", "dockerfile_path", dockerfile)
+			if !flags.Changed("deletion-protection") && !rollout && len(runs) == 0 {
+				return errors.New("nothing to change: pass --port, --start-command, --build-command, --release-command, --health-check-path, --startup-timeout, --dockerfile, --deletion-protection or --rollout")
+			}
+			ref := ""
+			if len(args) == 1 {
+				ref = args[0]
+			}
+			s, err := a.resolveService(cmd.Context(), ref, project)
 			if err != nil {
 				return err
 			}
 			c, _ := a.Client()
-			var out api.Service
-			if cmd.Flags().Changed("deletion-protection") {
+			out := *s
+			if flags.Changed("deletion-protection") {
 				if err := c.Do(cmd.Context(), "PUT", "/serverless/services/"+s.ID+"/deletion-protection", nil, map[string]bool{"enabled": protectService}, &out); err != nil {
 					return err
 				}
 			}
-			if rollout {
-				settings := map[string]interface{}{}
-				if cmd.Flags().Changed("rollout") {
+			var deployment *api.Deployment
+			if rollout || len(runs) > 0 {
+				settings := runs
+				if flags.Changed("rollout") {
 					if rolloutPercent == 0 {
 						settings["rollout_percent"] = nil
 					} else {
 						settings["rollout_percent"] = rolloutPercent
 					}
 				}
-				if cmd.Flags().Changed("rollout-minutes") {
+				if flags.Changed("rollout-minutes") {
 					settings["rollout_minutes"] = rolloutMinutes
 				}
 				var saved struct {
-					Service api.Service `json:"service"`
+					Service    api.Service     `json:"service"`
+					Deployment *api.Deployment `json:"deployment"`
 				}
+				// A gradual rollout alone is for the next deployment: it starts none.
+				deploy := !updateNoDeploy && len(settings) > countRollout(settings)
 				if err := c.Do(cmd.Context(), "PATCH", "/serverless/services/"+s.ID+"/settings", nil,
-					map[string]interface{}{"settings": settings, "deploy": false}, &saved); err != nil {
+					map[string]interface{}{"settings": settings, "deploy": deploy}, &saved); err != nil {
 					return err
 				}
-				out = saved.Service
+				out, deployment = saved.Service, saved.Deployment
 			}
 			return a.print(out, func(w *tabwriter.Writer) {
-				if cmd.Flags().Changed("deletion-protection") {
+				if flags.Changed("deletion-protection") {
 					fmt.Fprintf(w, "%s saved: deletion protection %s.\n", out.Name, onOff(out.DeletionProtect))
 				}
 				if rollout {
@@ -534,9 +593,24 @@ func servicesCmd(a *App) *cobra.Command {
 						fmt.Fprintf(w, "%s saved: new versions take every request at once.\n", out.Name)
 					}
 				}
+				if n := len(runs) - countRollout(runs); n > 0 {
+					if deployment != nil {
+						fmt.Fprintf(w, "%s saved. Applying with deployment #%d: `mw deployments follow --service %s` follows it.\n", out.Name, deployment.Number, out.Name)
+					} else {
+						fmt.Fprintf(w, "%s saved: applied with the next deployment (`mw deploy` starts one).\n", out.Name)
+					}
+				}
 			})
 		},
 	}
+	updateService.Flags().IntVar(&updatePort, "port", 0, "web and private: the port the app listens on")
+	updateService.Flags().StringVar(&startCommand, "start-command", "", "the command that starts the app (\"\": the image's or the detected one)")
+	updateService.Flags().StringVar(&buildCommand, "build-command", "", "the command that builds it, without a Dockerfile (\"\": the detected one)")
+	updateService.Flags().StringVar(&releaseCommand, "release-command", "", "a command run once before each new version takes traffic, e.g. migrations (\"\": none)")
+	updateService.Flags().StringVar(&healthPath, "health-check-path", "", "the path a new version must answer before it takes traffic (\"\": its port alone)")
+	updateService.Flags().IntVar(&startupTimeout, "startup-timeout", 0, "seconds a new version has to start answering")
+	updateService.Flags().StringVar(&dockerfile, "dockerfile", "", "the Dockerfile to build from (\"\": the one at the root, or detect the language)")
+	updateService.Flags().BoolVar(&updateNoDeploy, "no-deploy", false, "save without deploying: applied with the next deployment")
 	updateService.Flags().BoolVar(&protectService, "deletion-protection", true, "protect it from deletion")
 	updateService.Flags().IntVar(&rolloutPercent, "rollout", 0, "web and private: a new version's first share of the requests, 1-50 (0: off)")
 	updateService.Flags().IntVar(&rolloutMinutes, "rollout-minutes", 10, "how long a gradual rollout lasts, 1-60")
@@ -666,8 +740,57 @@ func statusCmd(a *App) *cobra.Command {
 				fmt.Fprintf(w, "Size\t%s\n", sizeText(s.Settings))
 				if d := s.LastDeployment; d != nil {
 					fmt.Fprintf(w, "Last deployment\t#%d %s (%s)\n", d.Number, strings.ToLower(d.Status), d.CreatedAt)
+					if !finished[d.Status] {
+						fmt.Fprintf(w, "\t`mw deployments follow --service %s` follows it to its end\n", s.Name)
+					}
+				} else if s.Source.Kind == "UPLOAD" {
+					fmt.Fprintln(w, "Last deployment\tnone yet: `mw deploy` sends its folder and deploys it")
 				}
 			})
+		},
+	}
+	serviceFlag(cmd, &service, &project)
+	return cmd
+}
+
+// countRollout is how many of a settings change's fields are the gradual
+// rollout's: those apply from the next deployment, and start none.
+func countRollout(settings map[string]interface{}) int {
+	n := 0
+	for _, k := range []string{"rollout_percent", "rollout_minutes"} {
+		if _, ok := settings[k]; ok {
+			n++
+		}
+	}
+	return n
+}
+
+func openCmd(a *App) *cobra.Command {
+	var service, project string
+	cmd := &cobra.Command{
+		Use:   "open",
+		Short: "Open a service's address in the browser (or print it, where there is none to open)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			s, err := a.resolveService(cmd.Context(), service, project)
+			if err != nil {
+				return err
+			}
+			if s.URL == nil || *s.URL == "" {
+				if s.InternalURL != nil && *s.InternalURL != "" {
+					return fmt.Errorf("%s is a private service: it answers only inside its project, at %s", s.Name, *s.InternalURL)
+				}
+				return fmt.Errorf("%s is a %s: it has no address to open", s.Name, strings.ToLower(s.Kind))
+			}
+			if a.JSON {
+				return a.print(map[string]string{"url": *s.URL}, nil)
+			}
+			if canOpenBrowser() && openBrowser(*s.URL) == nil {
+				a.printf("Opening %s\n", *s.URL)
+				return nil
+			}
+			a.printf("%s\n", *s.URL)
+			return nil
 		},
 	}
 	serviceFlag(cmd, &service, &project)

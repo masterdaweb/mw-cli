@@ -537,6 +537,7 @@ func TestServicesCreateWithAVolumeAndWhatTheImageKeeps(t *testing.T) {
 	const inspect = "POST /v1/serverless/images/inspect"
 	f.answer("GET /v1/serverless/projects", 200, page(map[string]interface{}{"id": pid, "name": "loja"}))
 	f.answer(create, 200, map[string]interface{}{"service": service("WEB", "IMAGE"), "deployment": deployment("d1", 1, "QUEUED")})
+	f.answer("GET /v1/serverless/deployments/d1", 200, deployment("d1", 1, "LIVE"))
 	f.answer(inspect, 200, map[string]interface{}{"ports": []int{2368}, "volumes": []string{"/var/lib/ghost/content", "/data/cache"}, "user": "node"})
 	out, _, err := run(t, srv, t.TempDir(), "services", "create", "web", "--project", "loja", "--image", "ghost:6", "--port", "2368", "--volume", "/data:5")
 	if err != nil {

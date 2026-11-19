@@ -361,12 +361,17 @@ func dataSizeText(code string) string {
 // ask reads a yes or no; Enter is yes. No answer at all (no terminal, nothing
 // piped) is a refusal that says how to go on.
 func (a *App) ask(question string) (bool, error) {
+	return a.askOr(question, "no answer: add --yes to publish without being asked")
+}
+
+// askOr is ask with what is said when there is nobody to answer.
+func (a *App) askOr(question, unanswered string) (bool, error) {
 	fmt.Fprint(a.Out, question)
 	line, err := bufio.NewReader(a.In).ReadString('\n')
 	if err != nil && !(errors.Is(err, io.EOF) && line != "") {
 		if errors.Is(err, io.EOF) {
 			fmt.Fprintln(a.Out)
-			return false, errors.New("no answer: add --yes to publish without being asked")
+			return false, errors.New(unanswered)
 		}
 		return false, err
 	}

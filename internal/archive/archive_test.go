@@ -184,3 +184,55 @@ func TestIgnoreRules(t *testing.T) {
 		}
 	}
 }
+
+func TestTheSettingsFileLeadsTheArchiveOnce(t *testing.T) {
+	dir := t.TempDir()
+	for name, content := range map[string]string{
+		"Dockerfile": "FROM scratch", "app/main.go": "package main", "mw.toml": "[deploy]\nport = 3000\n", "zz.txt": "z",
+	} {
+		p := filepath.Join(dir, name)
+		_ = os.MkdirAll(filepath.Dir(p), 0o755)
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	names := func() []string {
+		res, err := Pack(dir, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer os.Remove(res.Path)
+		f, err := os.Open(res.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		gz, err := gzip.NewReader(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		tr := tar.NewReader(gz)
+		for {
+			h, err := tr.Next()
+			if err == io.EOF {
+				return out
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, h.Name)
+		}
+	}
+	got := names()
+	if got[0] != ConfigFile || strings.Count(strings.Join(got, "\n"), ConfigFile) != 1 || len(got) != 5 {
+		t.Fatalf("packed %v", got)
+	}
+	// Left out by the folder's rules: it is not sent at all.
+	if err := os.WriteFile(filepath.Join(dir, ".mwignore"), []byte("mw.toml\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(names(), " "); strings.Contains(got, ConfigFile) {
+		t.Fatalf("an ignored settings file was sent: %s", got)
+	}
+}

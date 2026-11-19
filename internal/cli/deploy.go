@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,100 +25,94 @@ var pollEvery = 3 * time.Second
 // Terminal deployment states: nothing more happens to a deployment in one.
 var finished = map[string]bool{"LIVE": true, "REPLACED": true, "FAILED": true, "CANCELLED": true, "SUPERSEDED": true}
 
-// followDeployment prints a deployment's steps as they finish, until it ends.
-func (a *App) followDeployment(ctx context.Context, d *api.Deployment) error {
-	c, err := a.Client()
-	if err != nil {
-		return err
-	}
-	seen := map[string]string{}
-	toldRollout := false
-	for {
-		if rollingOut(d) && !toldRollout {
-			toldRollout = true
-			until := d.Rollout.Until
-			if t, err := time.Parse(time.RFC3339, until); err == nil {
-				until = t.Local().Format("15:04")
-			}
-			a.printf("  rolling out   %d%% of the requests go to the new version until %s; then all of them if it stays healthy\n"+
-				"                (`mw deployments promote` takes them all now, `mw deployments abort` goes back)\n", d.Rollout.Percent, until)
-		}
-		for _, s := range d.Steps {
-			// A step is told once it starts, then when it ends.
-			if s.Status == "PENDING" || seen[s.Kind] == s.Status {
-				continue
-			}
-			seen[s.Kind] = s.Status
-			msg := ""
-			if s.Message != nil && *s.Message != "" {
-				msg = " — " + *s.Message
-			}
-			a.printf("  %-13s %s%s\n", strings.ReplaceAll(strings.ToLower(s.Kind), "_", " "), strings.ToLower(s.Status), msg)
-		}
-		if finished[d.Status] {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(pollEvery):
-		}
-		var fresh api.Deployment
-		if err := c.Do(ctx, "GET", "/serverless/deployments/"+d.ID, nil, nil, &fresh); err != nil {
-			return err
-		}
-		*d = fresh
-	}
-	switch d.Status {
-	case "LIVE":
-		a.printf("Deployment #%d is live.\n", d.Number)
-		return nil
-	case "FAILED":
-		if f := d.Failure; f != nil {
-			msg := f.Message
-			if f.Hint != nil && *f.Hint != "" {
-				msg += "\n  " + *f.Hint
-			}
-			if f.LogTail != nil && *f.LogTail != "" {
-				msg += "\n\n" + *f.LogTail
-			}
-			return fmt.Errorf("deployment #%d failed: %s", d.Number, msg)
-		}
-		return fmt.Errorf("deployment #%d failed", d.Number)
-	default:
-		return fmt.Errorf("deployment #%d ended %s", d.Number, strings.ToLower(d.Status))
-	}
+// deployRun is how one `mw deploy` (or redeploy) goes about it.
+type deployRun struct {
+	detach     bool
+	noCache    bool
+	noBuildLog bool
+	message    string
+	// first: the service was made by this very command, so what to do next is said.
+	first bool
 }
 
 // startDeployment asks for one and, unless --detach, follows it.
-func (a *App) startDeployment(cmd *cobra.Command, s *api.Service, body map[string]interface{}, detach bool) error {
+func (a *App) startDeployment(cmd *cobra.Command, s *api.Service, body map[string]interface{}, run deployRun) error {
 	c, _ := a.Client()
 	var d api.Deployment
 	if err := c.Do(cmd.Context(), "POST", "/serverless/services/"+s.ID+"/deployments", nil, body, &d); err != nil {
 		return err
 	}
-	if a.JSON || detach {
-		return a.print(d, func(w *tabwriter.Writer) { fmt.Fprintf(w, "Deployment #%d of %s queued.\n", d.Number, s.Name) })
+	return a.started(cmd, s, &d, run)
+}
+
+// started says a deployment began and, unless --detach (or -o json), follows it.
+func (a *App) started(cmd *cobra.Command, s *api.Service, d *api.Deployment, run deployRun) error {
+	if a.JSON || run.detach {
+		return a.print(d, func(w *tabwriter.Writer) {
+			fmt.Fprintf(w, "Deployment #%d of %s queued: `mw deployments follow --service %s` follows it.\n", d.Number, s.Name, s.Name)
+		})
 	}
 	a.printf("Deployment #%d of %s:\n", d.Number, s.Name)
-	return a.followDeployment(cmd.Context(), &d)
+	return a.followDeploymentWith(cmd.Context(), d, follow{service: s, buildLog: !run.noBuildLog, firstSteps: run.first})
 }
 
 func deployCmd(a *App) *cobra.Command {
-	var service, project, image, ref, message string
-	var detach, noCache bool
+	var service, project, image, ref string
+	var run deployRun
+	var yes bool
 	cmd := &cobra.Command{
 		Use:   "deploy [folder]",
 		Short: "Deploy a folder, the latest commit (or a ref), or a new image, and follow it",
-		Long: "Deploy a service and print its steps as they finish, until it is live or has failed.\n\n" +
-			"A service made with `mw init` deploys a folder: this one (or the one linked to it), or\n" +
-			"the folder given. Its .mwignore — or else its .gitignore files — say what is left out.\n" +
-			"A service built from Git deploys the tip of its branch, or --ref; one that runs an image\n" +
-			"deploys a new one with --image.",
-		Example: "  mw deploy\n  mw deploy ./site --service web\n  mw deploy --ref v1.4.2\n  mw deploy --image ghcr.io/acme/api:1.5",
+		Long: "Deploy a service and follow it — its steps, what the build prints — until it is live, with\n" +
+			"its address, or has failed, with why.\n\n" +
+			"In a folder no service was made from yet, `mw deploy` offers to make one named after the\n" +
+			"folder and deploys it: a first deployment is this one command (--yes answers for scripts;\n" +
+			"`mw init` first, to choose the name, the project, the kind or the size).\n\n" +
+			"A service made from a folder deploys that folder: this one (or the one linked to it), or\n" +
+			"the folder given. Its .mwignore — or else its .gitignore files — say what is left out, and\n" +
+			"its mw.toml, when it has one, sets the port, the commands, the size. A service built from\n" +
+			"Git deploys the tip of its branch, or --ref; one that runs an image deploys a new one with\n" +
+			"--image.\n\n" +
+			"Ctrl+C stops the following, never the deployment: `mw deployments follow` picks it up again.",
+		Example: "  mw deploy\n  mw deploy --yes\n  mw deploy ./site --service web\n  mw deploy --ref v1.4.2\n  mw deploy --image ghcr.io/acme/api:1.5",
 		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			s, err := a.resolveService(cmd.Context(), service, project)
+			// Which folder: the one given, else this one — and the service it is linked to.
+			dir := a.Dir
+			if len(args) == 1 {
+				if dir = args[0]; !filepath.IsAbs(dir) {
+					dir = filepath.Join(a.Dir, dir)
+				}
+			}
+			linked, linkedAt, err := config.FindLink(dir)
+			if err != nil {
+				return err
+			}
+			if linked == nil && len(args) == 1 {
+				// A folder given from a linked one is deployed as that one's service.
+				if linked, _, err = config.FindLink(a.Dir); err != nil {
+					return err
+				}
+			}
+			var s *api.Service
+			switch {
+			case service != "":
+				s, err = a.resolveService(cmd.Context(), service, project)
+			case linked != nil:
+				s, err = a.resolveService(cmd.Context(), linked.ServiceID, project)
+				if isNotFound(err) {
+					return fmt.Errorf("the service this folder is linked to (%s) no longer exists: remove %s, then `mw deploy` makes a new one (or `mw link <service>` an existing one)",
+						firstNonEmpty(linked.ServiceName, linked.ServiceID), filepath.Join(linkedAt, ".mw"))
+				}
+			case image != "" || ref != "":
+				return errors.New("which service? pass --service, or run `mw link <service>` in this directory")
+			default:
+				// No service was made from this folder yet: a first deployment.
+				if s, err = a.firstDeploy(cmd, dir, yes); err != nil || s == nil {
+					return err
+				}
+				run.first = true
+			}
 			if err != nil {
 				return err
 			}
@@ -127,16 +120,11 @@ func deployCmd(a *App) *cobra.Command {
 				if image != "" || ref != "" {
 					return fmt.Errorf("%s is deployed from a folder: --image and --ref are for services built from a repository or an image", s.Name)
 				}
-				dir := a.Dir
-				if len(args) == 1 {
-					dir = args[0]
-				} else if service == "" {
+				if len(args) == 0 && service == "" && linkedAt != "" {
 					// The folder that is linked, even from inside it.
-					if _, at, _ := config.FindLink(a.Dir); at != "" {
-						dir = at
-					}
+					dir = linkedAt
 				}
-				return a.deployFolder(cmd, s, dir, message, noCache, detach)
+				return a.deployFolder(cmd, s, dir, run)
 			}
 			if len(args) == 1 {
 				what := "its repository: push to it"
@@ -152,26 +140,72 @@ func deployCmd(a *App) *cobra.Command {
 					map[string]interface{}{"image": map[string]string{"ref": image}}, nil); err != nil {
 					return err
 				}
-				return a.startDeployment(cmd, s, map[string]interface{}{"action": "latest"}, detach)
+				return a.startDeployment(cmd, s, map[string]interface{}{"action": "latest"}, run)
 			}
 			if ref != "" {
-				return a.startDeployment(cmd, s, map[string]interface{}{"action": "ref", "ref": ref, "no_cache": noCache}, detach)
+				return a.startDeployment(cmd, s, map[string]interface{}{"action": "ref", "ref": ref, "no_cache": run.noCache}, run)
 			}
-			return a.startDeployment(cmd, s, map[string]interface{}{"action": "latest", "no_cache": noCache}, detach)
+			return a.startDeployment(cmd, s, map[string]interface{}{"action": "latest", "no_cache": run.noCache}, run)
 		},
 	}
 	serviceFlag(cmd, &service, &project)
 	cmd.Flags().StringVar(&image, "image", "", "deploy this image (the service's source becomes it)")
 	cmd.Flags().StringVar(&ref, "ref", "", "a commit, branch or tag to deploy (services built from Git)")
-	cmd.Flags().StringVarP(&message, "message", "m", "", "what this deployment is, shown on it (a folder deploy)")
-	cmd.Flags().BoolVar(&noCache, "no-cache", false, "build without the build cache")
-	cmd.Flags().BoolVar(&detach, "detach", false, "do not wait for the deployment to finish")
+	cmd.Flags().StringVarP(&run.message, "message", "m", "", "what this deployment is, shown on it (a folder deploy)")
+	cmd.Flags().BoolVar(&run.noCache, "no-cache", false, "build without the build cache")
+	cmd.Flags().BoolVar(&run.detach, "detach", false, "do not wait for the deployment to finish")
+	cmd.Flags().BoolVar(&run.noBuildLog, "no-build-log", false, "follow the steps alone, without what the build prints")
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "a folder with no service yet: make one named after it without asking")
 	return cmd
+}
+
+// firstDeploy makes the service a folder with none is deployed as — named
+// after the folder, in a project of the same name — once the user agrees (or
+// --yes), and links the folder to it. A nil service with no error: declined.
+func (a *App) firstDeploy(cmd *cobra.Command, dir string, yes bool) (*api.Service, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, err
+	}
+	if st, err := os.Stat(abs); err != nil {
+		return nil, err
+	} else if !st.IsDir() {
+		return nil, fmt.Errorf("%s is not a folder", dir)
+	}
+	name := nameFrom(filepath.Base(abs))
+	found := detectApp(abs)
+	if !yes {
+		if a.JSON {
+			return nil, errors.New("no service was made from this folder yet: add --yes to make one named after it and deploy it, or run `mw init` first (or pass --service)")
+		}
+		a.printf("No service was made from this folder yet.\n")
+		a.printf("  %s\n", found.Text)
+		if !found.Recognized {
+			a.printf("  The build may not know what to do with it: a Dockerfile always works.\n")
+		}
+		ok, err := a.askOr(fmt.Sprintf("Make the service %q (web, in the project %q) and deploy this folder? [Y/n] ", name, name),
+			"no service was made from this folder yet, and there is no terminal to ask on: `mw deploy --yes` makes one named after it and deploys it; `mw init` first chooses its name, project, kind and size; --service names an existing one")
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			a.printf("Nothing was made. `mw init` makes the service with the name, project, kind and size you choose; `mw link <service>` uses one that exists.\n")
+			return nil, nil
+		}
+	} else {
+		a.printf("%s\n", found.Text)
+	}
+	s, p, err := a.makeFolderService(cmd.Context(), abs, folderService{project: name, name: name, kind: "web", port: found.Port})
+	if err != nil {
+		return nil, err
+	}
+	a.printf("Service %s created in project %s, and this folder linked to it (.mw/link.json).\n", s.Name, p.Name)
+	return s, nil
 }
 
 // deployFolder packs a folder, uploads it and follows the deployment that
 // builds it.
-func (a *App) deployFolder(cmd *cobra.Command, s *api.Service, dir, message string, noCache, detach bool) error {
+func (a *App) deployFolder(cmd *cobra.Command, s *api.Service, dir string, run deployRun) error {
 	c, _ := a.Client()
 	var access api.Access
 	if err := c.Do(cmd.Context(), "GET", "/serverless/access", nil, nil, &access); err != nil {
@@ -192,6 +226,7 @@ func (a *App) deployFolder(cmd *cobra.Command, s *api.Service, dir, message stri
 		note = ", leaving out what " + res.Rules + " says"
 	}
 	a.printf("Uploading %s (%d files%s)…\n", archive.HumanBytes(res.Size), res.Files, note)
+	message := run.message
 	if message == "" {
 		message = "mw deploy from " + filepath.Base(abs)
 		if sha := gitHead(abs); sha != "" {
@@ -199,18 +234,14 @@ func (a *App) deployFolder(cmd *cobra.Command, s *api.Service, dir, message stri
 		}
 	}
 	q := url.Values{"message": {message}}
-	if noCache {
+	if run.noCache {
 		q.Set("no_cache", "true")
 	}
 	var d api.Deployment
 	if err := c.Upload(cmd.Context(), "/serverless/services/"+s.ID+"/uploads", q, res.Path, "application/gzip", &d); err != nil {
 		return err
 	}
-	if a.JSON || detach {
-		return a.print(d, func(w *tabwriter.Writer) { fmt.Fprintf(w, "Deployment #%d of %s queued.\n", d.Number, s.Name) })
-	}
-	a.printf("Deployment #%d of %s:\n", d.Number, s.Name)
-	return a.followDeployment(cmd.Context(), &d)
+	return a.started(cmd, s, &d, run)
 }
 
 // gitHead is the folder's commit, marked when it has changes not committed;
@@ -229,7 +260,7 @@ func gitHead(dir string) string {
 
 func redeployCmd(a *App) *cobra.Command {
 	var service, project string
-	var noCache, detach bool
+	var run deployRun
 	cmd := &cobra.Command{
 		Use:   "redeploy",
 		Short: "Build and deploy the same source again (--no-cache: without the build cache)",
@@ -239,12 +270,13 @@ func redeployCmd(a *App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return a.startDeployment(cmd, s, map[string]interface{}{"action": "redeploy", "no_cache": noCache}, detach)
+			return a.startDeployment(cmd, s, map[string]interface{}{"action": "redeploy", "no_cache": run.noCache}, run)
 		},
 	}
 	serviceFlag(cmd, &service, &project)
-	cmd.Flags().BoolVar(&noCache, "no-cache", false, "build without the build cache")
-	cmd.Flags().BoolVar(&detach, "detach", false, "do not wait for the deployment to finish")
+	cmd.Flags().BoolVar(&run.noCache, "no-cache", false, "build without the build cache")
+	cmd.Flags().BoolVar(&run.detach, "detach", false, "do not wait for the deployment to finish")
+	cmd.Flags().BoolVar(&run.noBuildLog, "no-build-log", false, "follow the steps alone, without what the build prints")
 	return cmd
 }
 
@@ -311,7 +343,7 @@ func rollbackCmd(a *App) *cobra.Command {
 				return a.print(d, func(w *tabwriter.Writer) { fmt.Fprintf(w, "Rolling back to revision %d.\n", rev.Number) })
 			}
 			a.printf("Rolling %s back to revision %d (deployment #%d):\n", s.Name, rev.Number, d.Number)
-			return a.followDeployment(cmd.Context(), &d)
+			return a.followDeploymentWith(cmd.Context(), &d, follow{service: s})
 		},
 	}
 	serviceFlag(cmd, &service, &project)
@@ -325,7 +357,7 @@ func deploymentsCmd(a *App) *cobra.Command {
 	var limit int
 	cmd := &cobra.Command{
 		Use:   "deployments",
-		Short: "A service's deployments (--revisions: what rollback goes back to; cancel: stop one)",
+		Short: "A service's deployments (follow: one to its end; --revisions: what rollback goes back to; cancel: stop one)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			s, err := a.resolveService(cmd.Context(), service, project)
@@ -369,6 +401,7 @@ func deploymentsCmd(a *App) *cobra.Command {
 	serviceFlag(cmd, &service, &project)
 	cmd.Flags().BoolVar(&revisions, "revisions", false, "list revisions (what rollback goes back to)")
 	cmd.Flags().IntVar(&limit, "limit", 20, "how many")
+	cmd.AddCommand(deploymentsFollowCmd(a))
 	cmd.AddCommand(deploymentsCancelCmd(a))
 	cmd.AddCommand(deploymentsRolloutCmd(a, "promote"))
 	cmd.AddCommand(deploymentsRolloutCmd(a, "abort"))

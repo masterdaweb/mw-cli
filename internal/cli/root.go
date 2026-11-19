@@ -75,7 +75,7 @@ func NewRoot(a *App) *cobra.Command {
 	root.PersistentFlags().StringVar(&a.token, "token", "", "an API token for this command only (default: the signed-in one, or MW_TOKEN)")
 	root.AddCommand(
 		loginCmd(a), logoutCmd(a), whoamiCmd(a),
-		projectsCmd(a), servicesCmd(a), initCmd(a), linkCmd(a), statusCmd(a),
+		projectsCmd(a), servicesCmd(a), initCmd(a), linkCmd(a), statusCmd(a), openCmd(a),
 		deployCmd(a), redeployCmd(a), restartCmd(a), rollbackCmd(a), deploymentsCmd(a), logsCmd(a), scaleCmd(a), runCmd(a),
 		envCmd(a), domainsCmd(a), bindingsCmd(a), volumeCmd(a),
 		dbCmd(a, "db", ""), dbCmd(a, "redis", "valkey"),
@@ -163,7 +163,7 @@ func (a *App) resolveService(ctx context.Context, ref, project string) (*api.Ser
 			return nil, err
 		}
 		if l == nil {
-			return nil, errors.New("which service? pass --service, or run `mw link <service>` in this directory")
+			return nil, errors.New("which service? pass --service, or run `mw link <service>` in this directory (`mw deploy` here makes one from this folder)")
 		}
 		ref = l.ServiceID
 	}
@@ -258,6 +258,9 @@ func Describe(err error) string {
 	case p.Code == "insufficient_balance" && p.SubscriptionID != "":
 		line := topUpLine(p.SubscriptionID, p.ShortfallCents.String())
 		msg += "\n  " + strings.ToUpper(line[:1]) + line[1:] + "."
+	case p.Reason == "SERVERLESS_CREDIT_REQUIRED" && paramText(p.Params, "required_micro_cents") != "":
+		line := creditNeeded(paramText(p.Params, "required_micro_cents"), paramText(p.Params, "available_micro_cents"))
+		msg += "\n  " + strings.ToUpper(line[:1]) + line[1:]
 	case strings.HasSuffix(p.Reason, "_CREDIT_REQUIRED") || p.Code == "insufficient_balance":
 		msg += "\n  Add credit to your wallet in the console (Credits & Plans); `mw wallet` shows what is there."
 	case p.Reason == "SERVERLESS_NOT_ENABLED":
@@ -312,6 +315,8 @@ func quotaHint(params map[string]interface{}) string {
 		over = []interface{}{params}
 	}
 	var lines []string
+	// What can be done about it without asking for more, by what is passed.
+	capacity, projects := false, false
 	for _, o := range over {
 		m, _ := o.(map[string]interface{})
 		limit, _ := m["limit"].(float64)
@@ -319,10 +324,13 @@ func quotaHint(params map[string]interface{}) string {
 		requested, _ := m["requested"].(float64)
 		switch m["resource"] {
 		case "vcpu_millis":
+			capacity = true
 			lines = append(lines, fmt.Sprintf("vCPU: %s free of %s; this needs %s", milli(limit-used), milli(limit), milli(requested)))
 		case "memory_mib":
+			capacity = true
 			lines = append(lines, fmt.Sprintf("memory: %s GiB free of %s; this needs %s", gib(limit-used), gib(limit), gib(requested)))
 		case "projects", "services":
+			projects = projects || m["resource"] == "projects"
 			lines = append(lines, fmt.Sprintf("%s: %.0f of %.0f in use", m["resource"], used, limit))
 		}
 	}
@@ -330,7 +338,24 @@ func quotaHint(params map[string]interface{}) string {
 	for _, l := range lines {
 		out += "\n  " + l
 	}
+	if capacity {
+		out += "\n  To reserve less: a smaller --size, fewer --max-instances (web, private) or --instances (workers) — on `mw init`, `mw services create` or `mw scale`."
+	}
+	if projects {
+		out += "\n  A service can go in a project that exists: `mw init --project <name>` (`mw projects` lists them), then `mw deploy`."
+	}
 	return out + "\n  Ask for more in the console: Projects › Account limits › Ask for more."
+}
+
+// paramText is a refusal's parameter as text, "" without it.
+func paramText(params map[string]interface{}, key string) string {
+	switch v := params[key].(type) {
+	case string:
+		return v
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	}
+	return ""
 }
 
 func milli(v float64) string { return strconv.FormatFloat(v/1000, 'f', -1, 64) }

@@ -46,9 +46,14 @@ func TestARateRefusalIsRetriedWithTheSameIdempotencyKey(t *testing.T) {
 
 func TestWhatIsNotARateRefusalIsNotRetried(t *testing.T) {
 	for _, c := range []struct {
+		method     string
 		status     int
 		retryAfter string
-	}{{503, ""}, {500, "1"}, {429, "3600"}, {409, ""}} {
+	}{
+		{"GET", 500, "1"}, {"GET", 429, "3600"}, {"GET", 409, ""},
+		// A change is never sent again on a gateway's answer: only a read is.
+		{"POST", 503, ""}, {"POST", 502, ""}, {"DELETE", 504, ""},
+	} {
 		calls := 0
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			calls++
@@ -58,14 +63,94 @@ func TestWhatIsNotARateRefusalIsNotRetried(t *testing.T) {
 			w.WriteHeader(c.status)
 			_, _ = w.Write([]byte(`{"code":"x","detail":"refused","reason":"SOMETHING"}`))
 		}))
-		err := New(srv.URL, "mwk_x", "test").Do(context.Background(), "GET", "/me", nil, nil, nil)
+		err := New(srv.URL, "mwk_x", "test").Do(context.Background(), c.method, "/me", nil, nil, nil)
 		srv.Close()
 		var p *Problem
 		if !errors.As(err, &p) || p.Status != c.status || calls != 1 {
-			t.Errorf("%d (Retry-After %q): %v after %d call(s)", c.status, c.retryAfter, err, calls)
+			t.Errorf("%s %d (Retry-After %q): %v after %d call(s)", c.method, c.status, c.retryAfter, err, calls)
 		}
 		if !errors.Is(err, Code("SOMETHING")) {
 			t.Errorf("%d: the reason does not match: %v", c.status, err)
+		}
+	}
+}
+
+func TestAReadThatMeetsAGatewayIsAskedAgain(t *testing.T) {
+	TransientWait = time.Millisecond
+	defer func() { TransientWait = 500 * time.Millisecond }()
+	for _, status := range []int{502, 503, 504} {
+		calls := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if calls++; calls < 3 {
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte("Bad Gateway"))
+				return
+			}
+			_, _ = w.Write([]byte(`{"name":"loja"}`))
+		}))
+		var out struct{ Name string }
+		err := New(srv.URL, "mwk_x", "test").Do(context.Background(), "GET", "/me", nil, nil, &out)
+		srv.Close()
+		if err != nil || out.Name != "loja" || calls != 3 {
+			t.Errorf("%d: %v, %q after %d call(s)", status, err, out.Name, calls)
+		}
+	}
+	// One that stays away is reported as it is, after the tries.
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(502)
+	}))
+	defer srv.Close()
+	err := New(srv.URL, "mwk_x", "test").Do(context.Background(), "GET", "/me", nil, nil, nil)
+	var p *Problem
+	if !errors.As(err, &p) || p.Status != 502 || calls != TransientRetries+1 {
+		t.Fatalf("%v after %d call(s)", err, calls)
+	}
+}
+
+func TestARequestThatRanOutOfTimeIsNotAskedAgain(t *testing.T) {
+	TransientWait = time.Millisecond
+	defer func() { TransientWait = 500 * time.Millisecond }()
+	calls := 0
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		<-release
+	}))
+	defer srv.Close()
+	defer close(release)
+	c := New(srv.URL, "mwk_x", "test")
+	c.HTTP = &http.Client{Timeout: 50 * time.Millisecond}
+	started := time.Now()
+	err := c.Do(context.Background(), "GET", "/me", nil, nil, nil)
+	// Whoever asked has waited the limit once, not four times over.
+	if err == nil || calls != 1 || time.Since(started) > 2*time.Second {
+		t.Fatalf("%v after %d call(s) and %s", err, calls, time.Since(started))
+	}
+}
+
+func TestAConnectionThatDropsIsTriedAgainForAReadOnly(t *testing.T) {
+	TransientWait = time.Millisecond
+	defer func() { TransientWait = 500 * time.Millisecond }()
+	for _, method := range []string{"GET", "POST"} {
+		calls := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if calls++; calls == 1 {
+				// The connection closed with no answer.
+				conn, _, _ := w.(http.Hijacker).Hijack()
+				conn.Close()
+				return
+			}
+			_, _ = w.Write([]byte(`{}`))
+		}))
+		err := New(srv.URL, "mwk_x", "test").Do(context.Background(), method, "/me", nil, nil, nil)
+		srv.Close()
+		if method == "GET" && (err != nil || calls != 2) {
+			t.Errorf("GET: %v after %d call(s)", err, calls)
+		}
+		if method == "POST" && (err == nil || calls != 1) {
+			t.Errorf("POST: %v after %d call(s)", err, calls)
 		}
 	}
 }

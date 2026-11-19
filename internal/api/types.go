@@ -197,6 +197,8 @@ type DeploymentStep struct {
 	Kind    string  `json:"kind"`
 	Status  string  `json:"status"`
 	Message *string `json:"message"`
+	// DurationMS is how long the step took, once it ended.
+	DurationMS *int64 `json:"duration_ms"`
 }
 
 type Deployment struct {
