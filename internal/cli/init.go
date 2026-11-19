@@ -29,7 +29,7 @@ func nameFrom(folder string) string {
 }
 
 func initCmd(a *App) *cobra.Command {
-	var project, name, kind, location string
+	var project, name, kind, location, schedule, timezone string
 	var port int
 	var force bool
 	cmd := &cobra.Command{
@@ -38,9 +38,14 @@ func initCmd(a *App) *cobra.Command {
 		Long: "Make a service whose code is this folder (or the one given): `mw deploy` then packs it,\n" +
 			"sends it and deploys it. The project is made too if it does not exist. Names default to\n" +
 			"the folder's. The folder is linked (.mw/link.json), so commands run in it need no --service.",
-		Example: "  mw init\n  mw init --project loja --name api --port 8080\n  mw init --kind worker",
+		Example: "  mw init\n  mw init --project loja --name api --port 8080\n  mw init --kind worker\n  mw init --name limpeza --kind cron --schedule '0 3 * * *'",
 		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// A cron job without a schedule is refused before any project is made.
+			settings, err := cronSettings(kind, schedule, timezone)
+			if err != nil {
+				return err
+			}
 			dir := a.Dir
 			if len(args) == 1 {
 				dir = args[0]
@@ -71,7 +76,13 @@ func initCmd(a *App) *cobra.Command {
 				"source": map[string]interface{}{"kind": "UPLOAD"},
 			}
 			if port > 0 {
-				body["settings"] = map[string]int{"port": port}
+				if settings == nil {
+					settings = map[string]interface{}{}
+				}
+				settings["port"] = port
+			}
+			if settings != nil {
+				body["settings"] = settings
 			}
 			c, _ := a.Client()
 			var out struct {
@@ -96,6 +107,8 @@ func initCmd(a *App) *cobra.Command {
 	cmd.Flags().StringVar(&location, "location", "", "where a project made now runs, for good: a location's id, name or code (`mw regions`)")
 	cmd.Flags().StringVar(&name, "name", "", "the service's name (default: the folder's name)")
 	cmd.Flags().StringVar(&kind, "kind", "web", "web, private, worker or cron")
+	cmd.Flags().StringVar(&schedule, "schedule", "", "cron jobs: when it runs, a cron expression like '*/15 * * * *'")
+	cmd.Flags().StringVar(&timezone, "timezone", "", "cron jobs: the schedule's time zone, e.g. America/Sao_Paulo (the platform's default when not given)")
 	cmd.Flags().IntVar(&port, "port", 0, "the port the app listens on, as $PORT tells it (default 8080)")
 	cmd.Flags().BoolVar(&force, "force", false, "make a new service even if this folder is linked to one")
 	return cmd

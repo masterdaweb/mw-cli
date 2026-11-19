@@ -341,13 +341,7 @@ func deploymentsCmd(a *App) *cobra.Command {
 				return a.print(revs, func(w *tabwriter.Writer) {
 					fmt.Fprintln(w, "REVISION\tSTATUS\tLIVE\tSOURCE\tCREATED")
 					for _, r := range revs {
-						src := ""
-						if r.CommitSHA != nil {
-							src = shortSHA(*r.CommitSHA)
-						} else if r.Image != nil {
-							src = *r.Image
-						}
-						fmt.Fprintf(w, "%d\t%s\t%v\t%s\t%s\n", r.Number, strings.ToLower(r.Status), r.Live, src, r.CreatedAt)
+						fmt.Fprintf(w, "%d\t%s\t%v\t%s\t%s\n", r.Number, strings.ToLower(r.Status), r.Live, revisionSource(r), r.CreatedAt)
 					}
 				})
 			}
@@ -540,4 +534,26 @@ func scaleCmd(a *App) *cobra.Command {
 	cmd.Flags().IntVar(&concurrency, "concurrency", 0, "requests an instance takes at once")
 	cmd.Flags().IntVar(&instances, "instances", 0, "instances of a worker")
 	return cmd
+}
+
+// revisionSource is what a revision ran, in the customer's terms: its commit,
+// else the digest of its image. Never the image's full reference — that names
+// the platform's own registry (an older API still sends it), which is ours,
+// not the customer's, and which nobody outside a cluster can pull from.
+func revisionSource(r api.Revision) string {
+	if r.CommitSHA != nil && *r.CommitSHA != "" {
+		return shortSHA(*r.CommitSHA)
+	}
+	digest := ""
+	if r.Digest != nil {
+		digest = *r.Digest
+	} else if r.Image != nil {
+		if at := strings.LastIndex(*r.Image, "@"); at >= 0 {
+			digest = (*r.Image)[at+1:]
+		}
+	}
+	if strings.HasPrefix(digest, "sha256:") && len(digest) >= 19 {
+		return digest[:19]
+	}
+	return digest
 }

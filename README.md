@@ -232,7 +232,9 @@ mw deploy                  # packs the folder, sends it, follows the build until
 ```
 
 `mw init` names both after the folder (`--project`, `--name`, `--kind`,
-`--port` choose otherwise). The folder is linked in `.mw/link.json`, so every
+`--port` choose otherwise; a cron job, `--kind cron`, also takes its
+`--schedule`, and `--timezone` when it is not the platform's default). The
+folder is linked in `.mw/link.json`, so every
 command run inside it acts on that service without `--service`.
 
 What is sent: the folder minus what its `.mwignore` says, or else what its
@@ -471,8 +473,8 @@ mw wallet               # the credit, and how long it lasts at the current pace
 mw wallet topup 100     # an invoice to pay by Pix, boleto or card
 mw wallet cap set 500 --stop   # the most a period may cost; --stop stops the services at it
 mw wallet cap remove
-mw wallet recharge on 100      # a top-up invoice on its own at 3 days of credit left
-mw wallet recharge off
+mw wallet recharge on 100      # a top-up invoice on its own at 5 days of credit left, due the next day
+mw wallet recharge off         # and its invoice still open is cancelled
 mw usage                # this period so far, per service and database
 mw egress               # what services sent to visitors, of what the period includes
 ```

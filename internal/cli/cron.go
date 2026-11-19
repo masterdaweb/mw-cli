@@ -1,0 +1,28 @@
+package cli
+
+import (
+	"errors"
+	"strings"
+)
+
+// cronSettings is what a cron job is created with: its schedule, and the time
+// zone it is read in when one is given. The API refuses a cron service with no
+// schedule, so the CLI asks for it before sending anything; and a schedule on
+// any other kind is a mistake worth saying, not a value to drop.
+func cronSettings(kind, schedule, timezone string) (map[string]interface{}, error) {
+	schedule, timezone = strings.TrimSpace(schedule), strings.TrimSpace(timezone)
+	if !strings.EqualFold(kind, "cron") {
+		if schedule != "" || timezone != "" {
+			return nil, errors.New("--schedule and --timezone are for --kind cron")
+		}
+		return nil, nil
+	}
+	if schedule == "" {
+		return nil, errors.New("a cron job runs on a schedule: pass --schedule, e.g. --schedule '*/15 * * * *'")
+	}
+	s := map[string]interface{}{"cron_schedule": schedule}
+	if timezone != "" {
+		s["cron_timezone"] = timezone
+	}
+	return s, nil
+}

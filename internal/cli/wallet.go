@@ -39,6 +39,9 @@ func walletCmd(a *App) *cobra.Command {
 				}
 				fmt.Fprintf(t, "A new service needs\t%s\n", money(w.MinimumForNewService, 2))
 				fmt.Fprintf(t, "Automatic top-up\t%s\n", rechargeState(w))
+				if s := openRecharge(w); s != "" {
+					fmt.Fprintf(t, "Open top-up invoice\t%s\n", s)
+				}
 				// The cap, when there is one (a token without the scope still sees the rest).
 				var cap api.SpendCap
 				if c.Do(cmd.Context(), "GET", "/serverless/spend-cap", nil, nil, &cap) == nil && cap.CapMicroCents != nil {
@@ -100,7 +103,28 @@ func rechargeState(w api.Wallet) string {
 	if !w.AutoRechargeEnabled || w.AutoRechargeAmount == nil {
 		return "off — when the credit runs out, the services stop (`mw wallet recharge on <reais>`)"
 	}
-	return fmt.Sprintf("on: %s when the credit has 3 days left", money(*w.AutoRechargeAmount, 2))
+	return fmt.Sprintf("on: %s when the credit has 5 days left, due the next day", money(*w.AutoRechargeAmount, 2))
+}
+
+// openRecharge names the automatic top-up invoice still open, if any.
+func openRecharge(w api.Wallet) string {
+	o := w.OpenAutoRecharge
+	if o == nil {
+		return ""
+	}
+	return fmt.Sprintf("no. %s: %s, due %s", o.Invoice, money(o.AmountMicroCents, 2), dueDay(o.DueAt))
+}
+
+// offOutcome says what turning the recharge off did to its open invoice.
+func offOutcome(before, after api.Wallet) string {
+	b := before.OpenAutoRecharge
+	if b == nil {
+		return ""
+	}
+	if after.OpenAutoRecharge == nil {
+		return fmt.Sprintf("Cancelled top-up invoice no. %s (%s): it will not be charged.", b.Invoice, money(b.AmountMicroCents, 2))
+	}
+	return fmt.Sprintf("Top-up invoice no. %s could not be cancelled right now: if it was paid already, it becomes credit; if not, it is cancelled within the hour.", b.Invoice)
 }
 
 func autoRechargeCmd(a *App) *cobra.Command {
@@ -119,10 +143,13 @@ func autoRechargeCmd(a *App) *cobra.Command {
 	}
 	cmd := &cobra.Command{
 		Use:   "recharge",
-		Short: "A top-up invoice on its own when the credit has 3 days left",
-		Long: "On, a top-up invoice goes out by itself when the wallet's credit has three days\n" +
-			"left at the current pace: paid at once by a card saved in the client area, or by\n" +
-			"Pix or boleto from the e-mail. Off, the services stop when the credit runs out.",
+		Short: "A top-up invoice on its own when the credit has 5 days left",
+		Long: "On, a top-up invoice goes out by itself when the wallet's credit has five days\n" +
+			"left at the current pace (or falls below what a new service needs), due the next\n" +
+			"day, and you are e-mailed when it does. The platform only issues it: the billing\n" +
+			"system charges a saved card on the due date; Pix or boleto are paid from the\n" +
+			"invoice. Off, the services stop when the credit runs out, and its invoice\n" +
+			"still open is cancelled (one already paid becomes credit as usual).",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			c, err := a.Client()
@@ -156,10 +183,26 @@ func autoRechargeCmd(a *App) *cobra.Command {
 	}
 	off := &cobra.Command{
 		Use:   "off",
-		Short: "Turn it off (the amount is kept for next time)",
+		Short: "Turn it off and cancel its open invoice (the amount is kept for next time)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return put(cmd, map[string]interface{}{"enabled": false})
+			c, err := a.Client()
+			if err != nil {
+				return err
+			}
+			// Only to say what became of its open invoice: best effort.
+			var before api.Wallet
+			_ = c.Do(cmd.Context(), "GET", "/serverless/wallet", nil, nil, &before)
+			var w api.Wallet
+			if err := c.Do(cmd.Context(), "PUT", "/serverless/wallet/auto-recharge", nil, map[string]interface{}{"enabled": false}, &w); err != nil {
+				return err
+			}
+			return a.print(w, func(t *tabwriter.Writer) {
+				fmt.Fprintf(t, "Automatic top-up\t%s\n", rechargeState(w))
+				if s := offOutcome(before, w); s != "" {
+					fmt.Fprintln(t, s)
+				}
+			})
 		},
 	}
 	cmd.AddCommand(on, off)

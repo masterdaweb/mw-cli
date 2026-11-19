@@ -242,6 +242,7 @@ type Revision struct {
 	RollbackAvailable bool    `json:"rollback_available"`
 	CommitSHA         *string `json:"commit_sha"`
 	Image             *string `json:"image"`
+	Digest            *string `json:"digest"`
 	Size              *string `json:"size"`
 	CreatedAt         string  `json:"created_at"`
 }
@@ -337,9 +338,19 @@ type Wallet struct {
 	RunwayHours          *int    `json:"runway_hours"`
 	// While suspended: from when the data may be deleted if the credit stays out.
 	RetentionDeleteAt *string `json:"retention_delete_at"`
-	// A top-up invoice on its own at three days of credit left, of this much.
+	// A top-up invoice on its own at five days of credit left (due the next day), of this much.
 	AutoRechargeEnabled bool    `json:"auto_recharge_enabled"`
 	AutoRechargeAmount  *string `json:"auto_recharge_amount_micro_cents"`
+	// The automatic top-up invoice still open, if any: turning the recharge off cancels it.
+	OpenAutoRecharge *OpenRecharge `json:"open_auto_recharge"`
+}
+
+// OpenRecharge is an automatic top-up invoice not paid yet.
+type OpenRecharge struct {
+	Invoice          string `json:"invoice"`
+	AmountMicroCents string `json:"amount_micro_cents"`
+	// The due day, at noon UTC: a saved card is charged on that day.
+	DueAt string `json:"due_at"`
 }
 
 // SpendCap is the most serverless may cost a period, and what reaching it does.

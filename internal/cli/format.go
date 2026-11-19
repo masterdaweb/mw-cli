@@ -85,6 +85,16 @@ func when(iso string) string {
 	return t.Local().Format("2006-01-02 15:04")
 }
 
+// dueDay prints the day an invoice is due. The API sends a due day as noon UTC
+// of it, so the UTC date is the day whatever the local zone.
+func dueDay(iso string) string {
+	t, err := time.Parse(time.RFC3339Nano, iso)
+	if err != nil {
+		return iso
+	}
+	return t.UTC().Format("2006-01-02")
+}
+
 func whenPtr(iso *string) string {
 	if iso == nil || *iso == "" {
 		return "—"

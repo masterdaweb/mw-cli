@@ -472,19 +472,34 @@ func TestWalletRechargeTurnsOnWithAnAmountAndOff(t *testing.T) {
 	if body := jsonOf(t, f.last("PUT /v1/serverless/wallet/auto-recharge").Body); body["enabled"] != true || body["amount_micro_cents"] != "100000000" {
 		t.Fatalf("sent %v", body)
 	}
-	if !strings.Contains(out, "on: R$ 100,00 when the credit has 3 days left") {
+	if !strings.Contains(out, "on: R$ 100,00 when the credit has 5 days left, due the next day") {
 		t.Fatalf("said %q", out)
 	}
 	if _, _, err := run(t, srv, t.TempDir(), "wallet", "recharge", "on", "5"); err == nil || !strings.Contains(err.Error(), "R$ 20") {
 		t.Fatalf("too little: %v", err)
 	}
-	f.answer("PUT /v1/serverless/wallet/auto-recharge", 200, map[string]interface{}{"subscription_id": "sub-1", "usable_micro_cents": "12500000", "auto_recharge_enabled": false, "auto_recharge_amount_micro_cents": "100000000"})
+	// Off cancels its invoice still open, and says so.
+	openInvoice := map[string]interface{}{"invoice": "9001", "amount_micro_cents": "100000000", "due_at": "2026-11-20T12:00:00.000Z"}
+	f.answer("GET /v1/serverless/wallet", 200, map[string]interface{}{"subscription_id": "sub-1", "usable_micro_cents": "12500000", "auto_recharge_enabled": true, "auto_recharge_amount_micro_cents": "100000000", "open_auto_recharge": openInvoice})
+	f.answer("PUT /v1/serverless/wallet/auto-recharge", 200, map[string]interface{}{"subscription_id": "sub-1", "usable_micro_cents": "12500000", "auto_recharge_enabled": false, "auto_recharge_amount_micro_cents": "100000000", "open_auto_recharge": nil})
 	out, _, err = run(t, srv, t.TempDir(), "wallet", "recharge", "off")
-	if err != nil || !strings.Contains(out, "off — when the credit runs out, the services stop") {
+	if err != nil || !strings.Contains(out, "off — when the credit runs out, the services stop") || !strings.Contains(out, "Cancelled top-up invoice no. 9001 (R$ 100,00): it will not be charged.") {
 		t.Fatalf("off: %v %q", err, out)
 	}
 	if body := jsonOf(t, f.last("PUT /v1/serverless/wallet/auto-recharge").Body); body["enabled"] != false || body["amount_micro_cents"] != nil {
 		t.Fatalf("off sent %v", body)
+	}
+	// Not cancellable right now (the billing system unreachable, or already paid): said too.
+	f.answer("PUT /v1/serverless/wallet/auto-recharge", 200, map[string]interface{}{"subscription_id": "sub-1", "usable_micro_cents": "12500000", "auto_recharge_enabled": false, "auto_recharge_amount_micro_cents": "100000000", "open_auto_recharge": openInvoice})
+	out, _, err = run(t, srv, t.TempDir(), "wallet", "recharge", "off")
+	if err != nil || !strings.Contains(out, "Top-up invoice no. 9001 could not be cancelled right now") {
+		t.Fatalf("off, not cancelled: %v %q", err, out)
+	}
+	// The wallet names it while it is open, by its due DAY whatever the local zone.
+	f.answer("GET /v1/serverless/spend-cap", 200, map[string]interface{}{"cap_micro_cents": nil})
+	out, _, err = run(t, srv, t.TempDir(), "wallet")
+	if err != nil || !strings.Contains(out, "Open top-up invoice") || !strings.Contains(out, "no. 9001: R$ 100,00, due 2026-11-20") {
+		t.Fatalf("wallet: %v %q", err, out)
 	}
 }
 

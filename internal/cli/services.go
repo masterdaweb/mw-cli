@@ -319,6 +319,7 @@ func servicesCmd(a *App) *cobra.Command {
 
 	var (
 		image, kind, repo, branch, provider, connection, registry, volume string
+		schedule, timezone                                                string
 		port                                                              int
 		envs                                                              []string
 	)
@@ -335,7 +336,8 @@ func servicesCmd(a *App) *cobra.Command {
 		Example: "  mw services create api --project loja --repo ana/loja --branch main\n" +
 			"  mw services create site --project loja --repo https://github.com/ana/site\n" +
 			"  mw services create proxy --project loja --image nginx:1.27 --port 80\n" +
-			"  mw services create blog --project loja --image ghost:6 --port 2368 --volume /var/lib/ghost/content:5",
+			"  mw services create blog --project loja --image ghost:6 --port 2368 --volume /var/lib/ghost/content:5\n" +
+			"  mw services create limpeza --project loja --image ghcr.io/acme/jobs:1 --kind cron --schedule '0 3 * * *'",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if project == "" {
@@ -353,6 +355,10 @@ func servicesCmd(a *App) *cobra.Command {
 				if strings.EqualFold(kind, "cron") {
 					return errors.New("a cron job cannot have a volume: give one to the service that keeps the data")
 				}
+			}
+			cron, err := cronSettings(kind, schedule, timezone)
+			if err != nil {
+				return err
 			}
 			p, err := a.resolveProject(cmd.Context(), project)
 			if err != nil {
@@ -391,6 +397,9 @@ func servicesCmd(a *App) *cobra.Command {
 				"source": source,
 			}
 			settings := map[string]interface{}{}
+			for k, v := range cron {
+				settings[k] = v
+			}
 			if port > 0 {
 				settings["port"] = port
 			}
@@ -460,6 +469,8 @@ func servicesCmd(a *App) *cobra.Command {
 	create.Flags().StringVar(&image, "image", "", "an image to run, e.g. ghcr.io/acme/app:1.4")
 	create.Flags().StringVar(&registry, "registry", "", "the credential a private image is pulled with (`mw registry`)")
 	create.Flags().StringVar(&kind, "kind", "web", "web, private, worker or cron")
+	create.Flags().StringVar(&schedule, "schedule", "", "cron jobs: when it runs, a cron expression like '*/15 * * * *'")
+	create.Flags().StringVar(&timezone, "timezone", "", "cron jobs: the schedule's time zone, e.g. America/Sao_Paulo (the platform's default when not given)")
 	create.Flags().IntVar(&port, "port", 0, "the port the app listens on (web and private)")
 	create.Flags().StringArrayVar(&envs, "env", nil, "a variable, KEY=value (repeat)")
 	create.Flags().StringVar(&volume, "volume", "", "a persistent volume, PATH:GB like /data:5 (the service then runs one instance)")
