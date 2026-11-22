@@ -101,6 +101,7 @@ func dbCmd(a *App, use, engine string) *cobra.Command {
 		dbConnectCmd(a, engine),
 		dbAllowCmd(a, engine, true),
 		dbAllowCmd(a, engine, false),
+		dbServersCmd(a),
 		dbUpdateCmd(a, engine),
 		dbResizeCmd(a, engine),
 		dbRetryCmd(a, engine),
@@ -217,7 +218,7 @@ func dbSizesCmd(a *App, engine string) *cobra.Command {
 func dbCreateCmd(a *App, engine, kind string) *cobra.Command {
 	var size, project, eviction, version, location string
 	var edition, productKey, collation string
-	var allow, extensions []string
+	var allow, allowVMs, extensions []string
 	var noBackups, noProtection, detach, acceptTerms, attested bool
 	cmd := &cobra.Command{
 		Use:   "create <name>",
@@ -277,9 +278,34 @@ func dbCreateCmd(a *App, engine, kind string) *cobra.Command {
 					return err
 				}
 				body["datacenter_id"] = id
+			} else if project == "" {
+				// On its own, beside the account's servers: where most of them run.
+				if all, err := a.locations(cmd.Context(), dbLocations); err == nil {
+					if l := busiestLocation(all); l != nil {
+						body["datacenter_id"] = l.ID
+						a.printf("In %s, where %d of your servers run (--location to choose another).\n", l.Name, l.Instances)
+					}
+				}
 			}
 			if len(allow) > 0 {
 				body["allowed_cidrs"] = allow
+			}
+			if len(allowVMs) > 0 {
+				servers, err := a.accountServers(cmd.Context())
+				if err != nil {
+					return err
+				}
+				var ids []string
+				for _, ref := range allowVMs {
+					s, err := findServer(servers, nil, ref)
+					if err != nil {
+						return err
+					}
+					if !contains(ids, s.ID) {
+						ids = append(ids, s.ID)
+					}
+				}
+				body["allowed_vms"] = ids
 			}
 			if len(extensions) > 0 {
 				body["extensions"] = extensions
@@ -329,8 +355,9 @@ func dbCreateCmd(a *App, engine, kind string) *cobra.Command {
 	cmd.Flags().StringVar(&size, "size", "", "a size from `sizes` (default: the smallest)")
 	cmd.Flags().StringVar(&version, "version", "", "a release series from `sizes`, e.g. 18 or 11.4 (default: the newest)")
 	cmd.Flags().StringVar(&project, "project", "", "the project it belongs to (it then runs in the project's location)")
-	cmd.Flags().StringVar(&location, "location", "", locationFlag+"; default: its project's, or the platform's")
+	cmd.Flags().StringVar(&location, "location", "", locationFlag+"; default: its project's, or where most of your servers run, or the platform's")
 	cmd.Flags().StringArrayVar(&allow, "allow", nil, "an address or CIDR allowed to connect, besides your services (repeat)")
+	cmd.Flags().StringArrayVar(&allowVMs, "allow-vm", nil, "one of your servers allowed to connect, by name or id: its addresses are followed (repeat)")
 	if engine != "valkey" {
 		cmd.Flags().StringArrayVar(&extensions, "extension", nil, "a PostgreSQL extension to enable, e.g. vector (repeat)")
 		cmd.Flags().BoolVar(&noBackups, "no-backups", false, "no continuous backups (no point-in-time restore)")
@@ -444,6 +471,12 @@ func dbGetCmd(a *App, engine string) *cobra.Command {
 				}
 				fmt.Fprintf(w, "User\t%s\n", d.Connection.Username)
 				fmt.Fprintf(w, "URL\t%s\n", d.Connection.URI)
+				if d.Connection.IPv6 != nil {
+					fmt.Fprintf(w, "IPv6\t%s (an IPv6 source is allowed)\n", *d.Connection.IPv6)
+				}
+				for _, vm := range d.AllowedVMs {
+					fmt.Fprintf(w, "Allowed server\t%s\n", instanceText(vm))
+				}
 				if len(d.AllowedCIDRs) > 0 {
 					fmt.Fprintf(w, "Also allowed\t%s\n", strings.Join(d.AllowedCIDRs, ", "))
 				}
@@ -577,13 +610,20 @@ func (a *App) revealPassword(ctx context.Context, d *api.Database) (string, erro
 
 func dbURLCmd(a *App, engine string) *cobra.Command {
 	var direct bool
+	var caFile string
 	cmd := &cobra.Command{
 		Use:   "url <name>",
 		Short: "The connection URL with the owner's password (reading it is recorded)",
-		Long: "Print the connection URL with the owner's password. PostgreSQL: through the pooler, as\n" +
-			"apps should connect; --direct for migrations, dumps and sessions that need one server.",
-		Example: "  psql \"$(mw db url loja-prod --direct)\"",
-		Args:    cobra.ExactArgs(1),
+		Long: "Print the connection URL with the owner's password, the certificate verified. PostgreSQL:\n" +
+			"through the pooler, for many short connections; --direct for an app that keeps its own pool,\n" +
+			"LISTEN, advisory locks, temporary tables, migrations and dumps.\n\n" +
+			"PostgreSQL's URL says sslrootcert=system, which libpq 16+ reads; with an older psql here it\n" +
+			"names this system's CA bundle instead. For another machine, name its bundle with --ca-file\n" +
+			"(/etc/ssl/certs/ca-certificates.crt on Debian and Ubuntu, /etc/pki/tls/certs/ca-bundle.crt on\n" +
+			"RHEL and AlmaLinux). MySQL's names a CA file always: its client verifies only against one.",
+		Example: "  psql \"$(mw db url loja-prod --direct)\"\n" +
+			"  mw db url loja-prod --ca-file /etc/ssl/certs/ca-certificates.crt   # for an Ubuntu 22.04 server's .env",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			d, err := a.database(cmd.Context(), args[0], engine)
 			if err != nil {
@@ -593,6 +633,19 @@ func dbURLCmd(a *App, engine string) *cobra.Command {
 			if direct && d.Connection.DirectURI != nil {
 				raw = *d.Connection.DirectURI
 			}
+			private := false
+			if isMySQL(d.Engine) && caFile == "" {
+				c, _ := a.Client()
+				var ca api.DatabaseCA
+				if err := c.Do(cmd.Context(), "GET", "/databases/ca-certificate", nil, nil, &ca); err == nil {
+					private = ca.CACertificate != nil
+				}
+			}
+			psql := 0
+			if d.Engine == "postgres" && caFile == "" {
+				psql = localPsqlMajor()
+			}
+			raw, note := urlRoots(d.Engine, raw, caFile, psql, localCABundle(), private)
 			pw, err := a.revealPassword(cmd.Context(), d)
 			if err != nil {
 				return err
@@ -602,11 +655,15 @@ func dbURLCmd(a *App, engine string) *cobra.Command {
 				return err
 			}
 			fmt.Fprintln(a.Out, out)
+			if note != "" {
+				fmt.Fprintln(a.Err, note)
+			}
 			return nil
 		},
 	}
 	if engine != "valkey" {
 		cmd.Flags().BoolVar(&direct, "direct", false, "PostgreSQL: the direct port instead of the pooler")
+		cmd.Flags().StringVar(&caFile, "ca-file", "", "the CA bundle the URL names (PostgreSQL: system keeps sslrootcert=system)")
 	}
 	return cmd
 }
@@ -1120,67 +1177,135 @@ type exitError struct {
 func (e *exitError) Error() string { return strings.TrimSpace(e.msg) }
 
 func dbAllowCmd(a *App, engine string, allow bool) *cobra.Command {
-	use, short := "allow <name> <address>...", "Allow addresses or CIDRs to connect (your services always can)"
+	var vms []string
+	use, short := "allow <name> [address...] [--vm <server>...]", "Allow your servers, addresses or CIDRs to connect (your services always can)"
+	example := "  mw db allow loja-prod --vm web-1\n  mw db allow loja-prod 203.0.113.7 198.51.100.0/24"
 	if !allow {
-		use, short = "disallow <name> <address>...", "Stop allowing addresses or CIDRs"
+		use, short = "disallow <name> [address...] [--vm <server>...]", "Stop allowing servers, addresses or CIDRs"
+		example = "  mw db disallow loja-prod --vm web-1\n  mw db disallow loja-prod 203.0.113.7"
 	}
-	return &cobra.Command{
-		Use:     use,
-		Short:   short,
-		Example: "  mw db allow loja-prod 203.0.113.7 198.51.100.0/24",
-		Args:    cobra.MinimumNArgs(2),
+	cmd := &cobra.Command{
+		Use:   use,
+		Short: short,
+		Long: "A server picked with --vm (its name or id, as `mw db servers` lists them) is allowed by the\n" +
+			"addresses it holds NOW: the database follows them as they change, and stops admitting one the\n" +
+			"server gives up or when it is deleted. A typed address stays until you remove it, whoever\n" +
+			"holds it later.",
+		Example: example,
+		Args:    cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) < 2 && len(vms) == 0 {
+				return errors.New("name an address, a CIDR or a server (--vm)")
+			}
 			d, err := a.database(cmd.Context(), args[0], engine)
 			if err != nil {
 				return err
 			}
-			current := map[string]bool{}
-			var list []string
-			for _, c := range d.AllowedCIDRs {
-				current[c] = true
-				list = append(list, c)
+			patch := map[string]interface{}{}
+			if len(args) > 1 {
+				list, err := allowedAfter(d.AllowedCIDRs, args[1:], allow)
+				if err != nil {
+					return fmt.Errorf("%s %w", d.Name, err)
+				}
+				patch["allowed_cidrs"] = list
 			}
-			if allow {
-				for _, c := range args[1:] {
-					if !current[c] {
-						list = append(list, c)
+			if len(vms) > 0 {
+				servers, err := a.accountServers(cmd.Context())
+				if err != nil {
+					return err
+				}
+				picked := make([]string, 0, len(d.AllowedVMs))
+				for _, v := range d.AllowedVMs {
+					picked = append(picked, v.ID)
+				}
+				for _, ref := range vms {
+					s, err := findServer(servers, d.AllowedVMs, ref)
+					if err != nil {
+						return err
 					}
-				}
-			} else {
-				drop := map[string]bool{}
-				for _, c := range args[1:] {
-					drop[c] = true
-					// The API stores a single address as /32 or /128.
-					if !strings.Contains(c, "/") {
-						drop[c+"/32"], drop[c+"/128"] = true, true
+					if allow {
+						if len(s.Addresses) == 0 {
+							return fmt.Errorf("%s has no public address to allow", instanceName(s))
+						}
+						if !contains(picked, s.ID) {
+							picked = append(picked, s.ID)
+						}
+						continue
 					}
-				}
-				list = list[:0]
-				for _, c := range d.AllowedCIDRs {
-					if !drop[c] {
-						list = append(list, c)
+					if !contains(picked, s.ID) {
+						return fmt.Errorf("%s does not allow %s", d.Name, instanceName(s))
 					}
+					kept := picked[:0]
+					for _, id := range picked {
+						if id != s.ID {
+							kept = append(kept, id)
+						}
+					}
+					picked = kept
 				}
-				if len(list) == len(d.AllowedCIDRs) {
-					return fmt.Errorf("%s does not allow %s", d.Name, strings.Join(args[1:], ", "))
-				}
+				patch["allowed_vms"] = picked
 			}
-			if list == nil {
-				list = []string{}
-			}
-			out, err := a.updateDatabase(cmd.Context(), d, map[string]interface{}{"allowed_cidrs": list})
+			out, err := a.updateDatabase(cmd.Context(), d, patch)
 			if err != nil {
 				return err
 			}
 			return a.print(out, func(w *tabwriter.Writer) {
-				if len(out.AllowedCIDRs) == 0 {
+				if len(out.AllowedCIDRs) == 0 && len(out.AllowedVMs) == 0 {
 					fmt.Fprintf(w, "%s: only your services may connect. Applied within a minute.\n", out.Name)
 					return
 				}
-				fmt.Fprintf(w, "%s also allows %s. Applied within a minute.\n", out.Name, strings.Join(out.AllowedCIDRs, ", "))
+				var also []string
+				for _, vm := range out.AllowedVMs {
+					also = append(also, instanceText(vm))
+				}
+				also = append(also, out.AllowedCIDRs...)
+				fmt.Fprintf(w, "%s also allows %s. Applied within a minute.\n", out.Name, strings.Join(also, ", "))
+				for _, vm := range out.AllowedVMs {
+					if vm.DatacenterID != nil && out.DatacenterID != nil && *vm.DatacenterID != *out.DatacenterID {
+						fmt.Fprintf(w, "%s runs in another location: its connections cross the internet, and count as its outbound traffic.\n", instanceName(vm))
+					}
+				}
 			})
 		},
 	}
+	cmd.Flags().StringArrayVar(&vms, "vm", nil, "one of your servers, by name or id (repeat; `mw db servers` lists them)")
+	return cmd
+}
+
+// allowedAfter is a typed allowlist with addresses added, or taken away.
+func allowedAfter(current, addresses []string, allow bool) ([]string, error) {
+	have := map[string]bool{}
+	list := []string{}
+	for _, c := range current {
+		have[c] = true
+		list = append(list, c)
+	}
+	if allow {
+		for _, c := range addresses {
+			if !have[c] {
+				list = append(list, c)
+			}
+		}
+		return list, nil
+	}
+	drop := map[string]bool{}
+	for _, c := range addresses {
+		drop[c] = true
+		// The API stores a single address as /32 or /128.
+		if !strings.Contains(c, "/") {
+			drop[c+"/32"], drop[c+"/128"] = true, true
+		}
+	}
+	list = list[:0]
+	for _, c := range current {
+		if !drop[c] {
+			list = append(list, c)
+		}
+	}
+	if len(list) == len(current) {
+		return nil, fmt.Errorf("does not allow %s", strings.Join(addresses, ", "))
+	}
+	return list, nil
 }
 
 func (a *App) updateDatabase(ctx context.Context, d *api.Database, patch map[string]interface{}) (*api.Database, error) {

@@ -410,8 +410,24 @@ type DatabaseConnection struct {
 	PoolerPort *int    `json:"pooler_port"`
 	Database   *string `json:"database"`
 	Username   string  `json:"username"`
-	URI        string  `json:"uri"`
-	DirectURI  *string `json:"direct_uri"`
+	// URI and DirectURI verify the certificate: PostgreSQL's say
+	// sslmode=verify-full&sslrootcert=system (libpq 16+), MySQL's
+	// ssl-mode=VERIFY_IDENTITY.
+	URI       string  `json:"uri"`
+	DirectURI *string `json:"direct_uri"`
+	// IPv6 is the address the name also answers for (an AAAA): only while
+	// the database admits some IPv6 source.
+	IPv6 *string `json:"ipv6"`
+}
+
+// DatabaseInstance is one of the account's instances as a database's
+// allowlist sees it: the public addresses it holds now.
+type DatabaseInstance struct {
+	ID           string   `json:"id"`
+	Name         *string  `json:"name"`
+	Hostname     *string  `json:"hostname"`
+	DatacenterID *int64   `json:"datacenter_id"`
+	Addresses    []string `json:"addresses"`
 }
 
 type DatabaseHealth struct {
@@ -509,16 +525,19 @@ type DatabaseExportLink struct {
 }
 
 type Database struct {
-	ID                 string             `json:"id"`
-	Name               string             `json:"name"`
-	Engine             string             `json:"engine"`
-	Version            Series             `json:"version"`
-	Size               DatabaseSize       `json:"size"`
-	Status             string             `json:"status"`
-	Failure            *string            `json:"failure"`
-	ChangesPending     bool               `json:"changes_pending"`
-	Connection         DatabaseConnection `json:"connection"`
-	AllowedCIDRs       []string           `json:"allowed_cidrs"`
+	ID             string             `json:"id"`
+	Name           string             `json:"name"`
+	Engine         string             `json:"engine"`
+	Version        Series             `json:"version"`
+	Size           DatabaseSize       `json:"size"`
+	Status         string             `json:"status"`
+	Failure        *string            `json:"failure"`
+	ChangesPending bool               `json:"changes_pending"`
+	Connection     DatabaseConnection `json:"connection"`
+	AllowedCIDRs   []string           `json:"allowed_cidrs"`
+	// AllowedVMs are the account's instances allowed by picking them: the
+	// database admits the addresses each holds now.
+	AllowedVMs         []DatabaseInstance `json:"allowed_vms"`
 	Extensions         []string           `json:"extensions"`
 	EvictionPolicy     *string            `json:"eviction_policy"`
 	BackupsEnabled     bool               `json:"backups_enabled"`

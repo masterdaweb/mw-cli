@@ -22,6 +22,9 @@ type location struct {
 	RegionName *string `json:"region_name"`
 	// Deployable: it takes new ones now; false is temporarily unavailable.
 	Deployable bool `json:"deployable"`
+	// Instances: how many of the account's instances run there (databases'
+	// list only), where a new database is proposed by default.
+	Instances int `json:"instances"`
 }
 
 const (

@@ -21,6 +21,7 @@ func sqlServerOffer(f *fakeAPI) {
 			}}},
 	})
 	f.answer("POST /v1/databases", 200, map[string]interface{}{"database": database("provisioning"), "password": "Zq8sR2vX9pLm4TnB7wYc1KdH6gFj3eAu"})
+	f.answer("GET /v1/databases/locations", 200, []map[string]interface{}{})
 }
 
 // Microsoft's terms are the person's to accept: never by default, and a

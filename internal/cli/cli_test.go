@@ -302,8 +302,8 @@ func database(status string) map[string]interface{} {
 		"size": map[string]interface{}{"code": "pg-1-1", "cpus": 1, "memory_mb": 1024, "disk_gb": 10},
 		"connection": map[string]interface{}{
 			"host": "db1.db.mwapp.test", "port": 5432, "pooler_port": 6432, "database": "loja_prod", "username": "loja_prod",
-			"uri":        "postgresql://loja_prod@db1.db.mwapp.test:6432/loja_prod?sslmode=require",
-			"direct_uri": "postgresql://loja_prod@db1.db.mwapp.test:5432/loja_prod?sslmode=require",
+			"uri":        "postgresql://loja_prod@db1.db.mwapp.test:6432/loja_prod?sslmode=verify-full&sslrootcert=system",
+			"direct_uri": "postgresql://loja_prod@db1.db.mwapp.test:5432/loja_prod?sslmode=verify-full&sslrootcert=system",
 		},
 		"allowed_cidrs": []string{}, "extensions": []string{"vector"}, "health": map[string]interface{}{"state": "ok"},
 		"cost": map[string]interface{}{"month_to_date_micro_cents": "1234560000"}, "deletion_protection": true,
@@ -318,6 +318,12 @@ func TestDbCreateShowsThePasswordOnceAndWaitsUntilReady(t *testing.T) {
 			"sizes": []map[string]interface{}{{"code": "pg-1-1", "cpus": 1, "memory_mb": 1024, "disk_gb": 10, "hourly_micro_cents": "62500", "monthly_micro_cents": "45625000"}}}},
 	})
 	f.answer("POST /v1/databases", 200, map[string]interface{}{"database": database("provisioning"), "password": "Zq8sR2vX9pLm4TnB7wYc1KdH6gFj3eAu"})
+	// Where most of the account's servers run is where it is proposed.
+	f.answer("GET /v1/databases/locations", 200, []map[string]interface{}{
+		{"id": 1, "name": "Belo Horizonte", "deployable": true, "instances": 1},
+		{"id": 2, "name": "Dallas", "deployable": true, "instances": 3},
+		{"id": 3, "name": "Miami", "deployable": false, "instances": 9},
+	})
 	polls := 0
 	f.on("GET /v1/databases/loja-prod", func(w http.ResponseWriter, _ call) {
 		polls++
@@ -334,6 +340,9 @@ func TestDbCreateShowsThePasswordOnceAndWaitsUntilReady(t *testing.T) {
 	body := jsonOf(t, f.last("POST /v1/databases").Body)
 	if body["engine"] != "postgres" || body["size"] != "pg-1-1" || body["extensions"].([]interface{})[0] != "vector" || body["allowed_cidrs"].([]interface{})[0] != "203.0.113.7" {
 		t.Fatalf("sent %v", body)
+	}
+	if body["datacenter_id"] != float64(2) || !strings.Contains(out, "In Dallas, where 3 of your servers run") {
+		t.Fatalf("not beside its servers: %v / %q", body["datacenter_id"], out)
 	}
 	if strings.Count(out, "Zq8sR2vX9pLm4TnB7wYc1KdH6gFj3eAu") != 1 || !strings.Contains(out, "loja-prod is ready") {
 		t.Fatalf("said %q", out)
@@ -354,6 +363,8 @@ func TestDbCreateTellsADeveloperWhoHasThePassword(t *testing.T) {
 	})
 	// A developer's key: the API keeps the secret with the administrators.
 	f.answer("POST /v1/databases", 200, map[string]interface{}{"database": database("provisioning"), "password": nil})
+	// No servers anywhere: the platform's default, nothing said.
+	f.answer("GET /v1/databases/locations", 200, []map[string]interface{}{{"id": 1, "name": "Belo Horizonte", "deployable": true, "instances": 0}})
 	out, _, err := run(t, srv, t.TempDir(), "db", "create", "loja-prod", "--detach")
 	if err != nil {
 		t.Fatal(err)
@@ -364,6 +375,7 @@ func TestDbCreateTellsADeveloperWhoHasThePassword(t *testing.T) {
 }
 
 func TestDbURLCarriesThePasswordAndListMoney(t *testing.T) {
+	onThisMachine(t, 17, "/etc/ssl/certs/ca-certificates.crt")
 	f, srv := newFakeAPI(t)
 	f.answer("GET /v1/databases/loja-prod", 200, database("running"))
 	f.answer("POST /v1/databases/loja-prod/reveal-password", 200, map[string]string{"password": "p@ss/w:rd"})
@@ -371,7 +383,7 @@ func TestDbURLCarriesThePasswordAndListMoney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.TrimSpace(out) != "postgresql://loja_prod:p%40ss%2Fw%3Ard@db1.db.mwapp.test:5432/loja_prod?sslmode=require" {
+	if strings.TrimSpace(out) != "postgresql://loja_prod:p%40ss%2Fw%3Ard@db1.db.mwapp.test:5432/loja_prod?sslmode=verify-full&sslrootcert=system" {
 		t.Fatalf("url %q", out)
 	}
 	f.answer("GET /v1/databases", 200, []interface{}{database("running")})
