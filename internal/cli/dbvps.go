@@ -8,23 +8,20 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"text/tabwriter"
-
-	"github.com/spf13/cobra"
 
 	"github.com/masterdaweb/mw-cli/internal/api"
 )
 
-// A database used from the account's own servers (VPS): picked by name or id
+// A database used from the account's own VPS instances: picked by name or id
 // rather than typed as addresses — the database then admits the addresses
-// each server holds NOW, follows them, and stops admitting one the server
-// gives up (a typed address stays until removed, whoever holds it next) —
-// and connection URLs that verify the certificate with what this machine's
-// clients can read.
+// each instance holds NOW, follows them, and stops admitting one the
+// instance gives up (a typed address stays until removed, whoever holds it
+// next) — and connection URLs that verify the certificate with what this
+// machine's clients can read.
 
-// accountServers is the account's servers with the public addresses each
-// holds now (GET /v1/databases/instances).
-func (a *App) accountServers(ctx context.Context) ([]api.DatabaseInstance, error) {
+// accountInstances is the account's VPS instances with the public addresses
+// each holds now (GET /v1/databases/instances).
+func (a *App) accountInstances(ctx context.Context) ([]api.DatabaseInstance, error) {
 	c, err := a.Client()
 	if err != nil {
 		return nil, err
@@ -36,7 +33,7 @@ func (a *App) accountServers(ctx context.Context) ([]api.DatabaseInstance, error
 	return out, nil
 }
 
-// instanceName is how a server is named: its name, its hostname, or its id.
+// instanceName is how an instance is named: its name, its hostname, or its id.
 func instanceName(s api.DatabaseInstance) string {
 	switch {
 	case s.Name != nil && *s.Name != "":
@@ -44,10 +41,10 @@ func instanceName(s api.DatabaseInstance) string {
 	case s.Hostname != nil && *s.Hostname != "":
 		return *s.Hostname
 	}
-	return "server " + s.ID
+	return "instance " + s.ID
 }
 
-// instanceText names a server with the addresses it holds now.
+// instanceText names an instance with the addresses it holds now.
 func instanceText(s api.DatabaseInstance) string {
 	if len(s.Addresses) == 0 {
 		return instanceName(s) + " (no public address)"
@@ -55,11 +52,11 @@ func instanceText(s api.DatabaseInstance) string {
 	return instanceName(s) + " (" + strings.Join(s.Addresses, ", ") + ")"
 }
 
-// findServer is the server a --vm names: its id, or its name or hostname
-// whatever the case; refused with the candidates when it names several.
-func findServer(servers, allowed []api.DatabaseInstance, ref string) (api.DatabaseInstance, error) {
+// findInstance is the instance an --instance names: its id, or its name or
+// hostname whatever the case; refused with the candidates when it names several.
+func findInstance(instances, allowed []api.DatabaseInstance, ref string) (api.DatabaseInstance, error) {
 	ref = strings.TrimSpace(ref)
-	all := append(append([]api.DatabaseInstance{}, servers...), allowed...)
+	all := append(append([]api.DatabaseInstance{}, instances...), allowed...)
 	for _, s := range all {
 		if s.ID == ref {
 			return s, nil
@@ -80,50 +77,17 @@ func findServer(servers, allowed []api.DatabaseInstance, ref string) (api.Databa
 	case 1:
 		return found[0], nil
 	case 0:
-		return api.DatabaseInstance{}, fmt.Errorf("no server %q in this account (`mw db servers` lists them)", ref)
+		return api.DatabaseInstance{}, fmt.Errorf("no instance %q in this account (`mw instances` lists them)", ref)
 	}
 	ids := make([]string, 0, len(found))
 	for _, s := range found {
 		ids = append(ids, s.ID)
 	}
-	return api.DatabaseInstance{}, fmt.Errorf("%d servers are called %q: name one by its id (%s)", len(found), ref, strings.Join(ids, ", "))
-}
-
-func dbServersCmd(a *App) *cobra.Command {
-	return &cobra.Command{
-		Use:   "servers",
-		Short: "Your servers (VPS) and their addresses, to allow with `mw db allow <name> --vm <server>`",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			servers, err := a.accountServers(cmd.Context())
-			if err != nil {
-				return err
-			}
-			ids := make([]*int64, 0, len(servers))
-			for _, s := range servers {
-				ids = append(ids, s.DatacenterID)
-			}
-			names := a.locationNames(cmd.Context(), ids...)
-			return a.print(servers, func(w *tabwriter.Writer) {
-				if len(servers) == 0 {
-					fmt.Fprintln(w, "No servers in this account.")
-					return
-				}
-				fmt.Fprintln(w, "ID\tNAME\tLOCATION\tADDRESSES")
-				for _, s := range servers {
-					addrs := strings.Join(s.Addresses, ", ")
-					if addrs == "" {
-						addrs = "-"
-					}
-					fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", s.ID, instanceName(s), locationText(names, s.DatacenterID), addrs)
-				}
-			})
-		},
-	}
+	return api.DatabaseInstance{}, fmt.Errorf("%d instances are called %q: name one by its id (%s)", len(found), ref, strings.Join(ids, ", "))
 }
 
 // busiestLocation is the deployable location running most of the account's
-// servers (the first of them on a tie), or nil when it runs none in one.
+// instances (the first of them on a tie), or nil when it runs none in one.
 func busiestLocation(all []location) *location {
 	var best *location
 	for i := range all {

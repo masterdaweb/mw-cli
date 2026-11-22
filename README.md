@@ -485,11 +485,10 @@ mw redis create filas                        # Redis
 mw db connect loja-prod                      # psql, through the platform, the password passed for you
 mw db tunnel loja-prod --port 15432          # a port on this computer for any tool (DBeaver, an ORM)
 mw db url loja-prod --direct                 # the connection URL, certificate verified, for your own tools
-mw db url loja-prod --ca-file /etc/ssl/certs/ca-certificates.crt   # for a server whose psql predates 16
+mw db url loja-prod --ca-file /etc/ssl/certs/ca-certificates.crt   # for a machine whose psql predates 16
 mw db bind loja-prod --service web --layout framework   # DB_* variables, a login of its own
 mw db resize loja-prod --size pg-2-4         # a short restart; billed at the new size from now on
-mw db servers                                # your servers (VPS) and the addresses each holds
-mw db allow loja-prod --vm web-1             # let your server connect: its addresses are followed
+mw db allow loja-prod --instance web-1       # let your VPS instance connect: its addresses are followed
 mw db allow loja-prod 203.0.113.7            # let your office connect too
 mw db import loja-prod loja.sql.gz           # upload a dump; the database imports it (a restore point first)
 mw db import loja-prod loja.dump --replace   # pg_dump -Fc, replacing the tables it holds
@@ -504,13 +503,14 @@ instead, once `mw db allow` lets yours). The password reaches the client through
 its environment or a file only you can read, never its command line. `mw db
 export` and `mw db import --local` connect the same way.
 
-**From your own servers.** `mw db allow <db> --vm <server>` allows a server by
-name or id (`mw db servers`): the database admits the public addresses it holds
-NOW, follows them, and stops admitting one the server gives up or once it is
-deleted. A typed address stays until you remove it — and a released address is
-handed to the next server created, possibly another customer's. A new database
-is made, by default, where most of your servers run (it says so; `--location`
-picks another), and `--allow-vm` allows them from the start.
+**From your own VPS instances.** `mw db allow <db> --instance <instance>` allows
+an instance by name or id (`mw instances` lists them): the database admits the
+public addresses it holds NOW, follows them, and stops admitting one the
+instance gives up or once it is deleted. A typed address stays until you remove
+it — and a released address is handed to the next instance created, possibly
+another customer's. A new database is made, by default, where most of your
+instances run (it says so; `--location` picks another), and `--allow-instance`
+allows them from the start.
 
 `mw db url` verifies the certificate: PostgreSQL's URL says
 `sslmode=verify-full&sslrootcert=system`, which libpq 16 and newer read; with an

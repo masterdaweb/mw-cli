@@ -318,7 +318,7 @@ func TestDbCreateShowsThePasswordOnceAndWaitsUntilReady(t *testing.T) {
 			"sizes": []map[string]interface{}{{"code": "pg-1-1", "cpus": 1, "memory_mb": 1024, "disk_gb": 10, "hourly_micro_cents": "62500", "monthly_micro_cents": "45625000"}}}},
 	})
 	f.answer("POST /v1/databases", 200, map[string]interface{}{"database": database("provisioning"), "password": "Zq8sR2vX9pLm4TnB7wYc1KdH6gFj3eAu"})
-	// Where most of the account's servers run is where it is proposed.
+	// Where most of the account's instances run is where it is proposed.
 	f.answer("GET /v1/databases/locations", 200, []map[string]interface{}{
 		{"id": 1, "name": "Belo Horizonte", "deployable": true, "instances": 1},
 		{"id": 2, "name": "Dallas", "deployable": true, "instances": 3},
@@ -341,7 +341,7 @@ func TestDbCreateShowsThePasswordOnceAndWaitsUntilReady(t *testing.T) {
 	if body["engine"] != "postgres" || body["size"] != "pg-1-1" || body["extensions"].([]interface{})[0] != "vector" || body["allowed_cidrs"].([]interface{})[0] != "203.0.113.7" {
 		t.Fatalf("sent %v", body)
 	}
-	if body["datacenter_id"] != float64(2) || !strings.Contains(out, "In Dallas, where 3 of your servers run") {
+	if body["datacenter_id"] != float64(2) || !strings.Contains(out, "In Dallas, where 3 of your VPS instances run") {
 		t.Fatalf("not beside its servers: %v / %q", body["datacenter_id"], out)
 	}
 	if strings.Count(out, "Zq8sR2vX9pLm4TnB7wYc1KdH6gFj3eAu") != 1 || !strings.Contains(out, "loja-prod is ready") {
@@ -363,7 +363,7 @@ func TestDbCreateTellsADeveloperWhoHasThePassword(t *testing.T) {
 	})
 	// A developer's key: the API keeps the secret with the administrators.
 	f.answer("POST /v1/databases", 200, map[string]interface{}{"database": database("provisioning"), "password": nil})
-	// No servers anywhere: the platform's default, nothing said.
+	// No instances anywhere: the platform's default, nothing said.
 	f.answer("GET /v1/databases/locations", 200, []map[string]interface{}{{"id": 1, "name": "Belo Horizonte", "deployable": true, "instances": 0}})
 	out, _, err := run(t, srv, t.TempDir(), "db", "create", "loja-prod", "--detach")
 	if err != nil {

@@ -101,7 +101,6 @@ func dbCmd(a *App, use, engine string) *cobra.Command {
 		dbConnectCmd(a, engine),
 		dbAllowCmd(a, engine, true),
 		dbAllowCmd(a, engine, false),
-		dbServersCmd(a),
 		dbUpdateCmd(a, engine),
 		dbResizeCmd(a, engine),
 		dbRetryCmd(a, engine),
@@ -218,7 +217,7 @@ func dbSizesCmd(a *App, engine string) *cobra.Command {
 func dbCreateCmd(a *App, engine, kind string) *cobra.Command {
 	var size, project, eviction, version, location string
 	var edition, productKey, collation string
-	var allow, allowVMs, extensions []string
+	var allow, allowInstances, extensions []string
 	var noBackups, noProtection, detach, acceptTerms, attested bool
 	cmd := &cobra.Command{
 		Use:   "create <name>",
@@ -279,25 +278,25 @@ func dbCreateCmd(a *App, engine, kind string) *cobra.Command {
 				}
 				body["datacenter_id"] = id
 			} else if project == "" {
-				// On its own, beside the account's servers: where most of them run.
+				// On its own, beside the account's instances: where most of them run.
 				if all, err := a.locations(cmd.Context(), dbLocations); err == nil {
 					if l := busiestLocation(all); l != nil {
 						body["datacenter_id"] = l.ID
-						a.printf("In %s, where %d of your servers run (--location to choose another).\n", l.Name, l.Instances)
+						a.printf("In %s, where %d of your VPS instances run (--location to choose another).\n", l.Name, l.Instances)
 					}
 				}
 			}
 			if len(allow) > 0 {
 				body["allowed_cidrs"] = allow
 			}
-			if len(allowVMs) > 0 {
-				servers, err := a.accountServers(cmd.Context())
+			if len(allowInstances) > 0 {
+				instances, err := a.accountInstances(cmd.Context())
 				if err != nil {
 					return err
 				}
 				var ids []string
-				for _, ref := range allowVMs {
-					s, err := findServer(servers, nil, ref)
+				for _, ref := range allowInstances {
+					s, err := findInstance(instances, nil, ref)
 					if err != nil {
 						return err
 					}
@@ -355,9 +354,9 @@ func dbCreateCmd(a *App, engine, kind string) *cobra.Command {
 	cmd.Flags().StringVar(&size, "size", "", "a size from `sizes` (default: the smallest)")
 	cmd.Flags().StringVar(&version, "version", "", "a release series from `sizes`, e.g. 18 or 11.4 (default: the newest)")
 	cmd.Flags().StringVar(&project, "project", "", "the project it belongs to (it then runs in the project's location)")
-	cmd.Flags().StringVar(&location, "location", "", locationFlag+"; default: its project's, or where most of your servers run, or the platform's")
+	cmd.Flags().StringVar(&location, "location", "", locationFlag+"; default: its project's, or where most of your VPS instances run, or the platform's")
 	cmd.Flags().StringArrayVar(&allow, "allow", nil, "an address or CIDR allowed to connect, besides your services (repeat)")
-	cmd.Flags().StringArrayVar(&allowVMs, "allow-vm", nil, "one of your servers allowed to connect, by name or id: its addresses are followed (repeat)")
+	cmd.Flags().StringArrayVar(&allowInstances, "allow-instance", nil, "one of your VPS instances allowed to connect, by name or id: its addresses are followed (repeat)")
 	if engine != "valkey" {
 		cmd.Flags().StringArrayVar(&extensions, "extension", nil, "a PostgreSQL extension to enable, e.g. vector (repeat)")
 		cmd.Flags().BoolVar(&noBackups, "no-backups", false, "no continuous backups (no point-in-time restore)")
@@ -475,7 +474,7 @@ func dbGetCmd(a *App, engine string) *cobra.Command {
 					fmt.Fprintf(w, "IPv6\t%s (an IPv6 source is allowed)\n", *d.Connection.IPv6)
 				}
 				for _, vm := range d.AllowedVMs {
-					fmt.Fprintf(w, "Allowed server\t%s\n", instanceText(vm))
+					fmt.Fprintf(w, "Allowed instance\t%s\n", instanceText(vm))
 				}
 				if len(d.AllowedCIDRs) > 0 {
 					fmt.Fprintf(w, "Also allowed\t%s\n", strings.Join(d.AllowedCIDRs, ", "))
@@ -1177,25 +1176,25 @@ type exitError struct {
 func (e *exitError) Error() string { return strings.TrimSpace(e.msg) }
 
 func dbAllowCmd(a *App, engine string, allow bool) *cobra.Command {
-	var vms []string
-	use, short := "allow <name> [address...] [--vm <server>...]", "Allow your servers, addresses or CIDRs to connect (your services always can)"
-	example := "  mw db allow loja-prod --vm web-1\n  mw db allow loja-prod 203.0.113.7 198.51.100.0/24"
+	var instances []string
+	use, short := "allow <name> [address...] [--instance <instance>...]", "Allow your VPS instances, addresses or CIDRs to connect (your services always can)"
+	example := "  mw db allow loja-prod --instance web-1\n  mw db allow loja-prod 203.0.113.7 198.51.100.0/24"
 	if !allow {
-		use, short = "disallow <name> [address...] [--vm <server>...]", "Stop allowing servers, addresses or CIDRs"
-		example = "  mw db disallow loja-prod --vm web-1\n  mw db disallow loja-prod 203.0.113.7"
+		use, short = "disallow <name> [address...] [--instance <instance>...]", "Stop allowing instances, addresses or CIDRs"
+		example = "  mw db disallow loja-prod --instance web-1\n  mw db disallow loja-prod 203.0.113.7"
 	}
 	cmd := &cobra.Command{
 		Use:   use,
 		Short: short,
-		Long: "A server picked with --vm (its name or id, as `mw db servers` lists them) is allowed by the\n" +
-			"addresses it holds NOW: the database follows them as they change, and stops admitting one the\n" +
-			"server gives up or when it is deleted. A typed address stays until you remove it, whoever\n" +
-			"holds it later.",
+		Long: "A VPS instance picked with --instance (its name or id, as `mw instances` lists them) is\n" +
+			"allowed by the addresses it holds NOW: the database follows them as they change, and stops\n" +
+			"admitting one the instance gives up or when it is deleted. A typed address stays until you\n" +
+			"remove it, whoever holds it later.",
 		Example: example,
 		Args:    cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) < 2 && len(vms) == 0 {
-				return errors.New("name an address, a CIDR or a server (--vm)")
+			if len(args) < 2 && len(instances) == 0 {
+				return errors.New("name an address, a CIDR or an instance (--instance)")
 			}
 			d, err := a.database(cmd.Context(), args[0], engine)
 			if err != nil {
@@ -1209,8 +1208,8 @@ func dbAllowCmd(a *App, engine string, allow bool) *cobra.Command {
 				}
 				patch["allowed_cidrs"] = list
 			}
-			if len(vms) > 0 {
-				servers, err := a.accountServers(cmd.Context())
+			if len(instances) > 0 {
+				listed, err := a.accountInstances(cmd.Context())
 				if err != nil {
 					return err
 				}
@@ -1218,8 +1217,8 @@ func dbAllowCmd(a *App, engine string, allow bool) *cobra.Command {
 				for _, v := range d.AllowedVMs {
 					picked = append(picked, v.ID)
 				}
-				for _, ref := range vms {
-					s, err := findServer(servers, d.AllowedVMs, ref)
+				for _, ref := range instances {
+					s, err := findInstance(listed, d.AllowedVMs, ref)
 					if err != nil {
 						return err
 					}
@@ -1268,7 +1267,7 @@ func dbAllowCmd(a *App, engine string, allow bool) *cobra.Command {
 			})
 		},
 	}
-	cmd.Flags().StringArrayVar(&vms, "vm", nil, "one of your servers, by name or id (repeat; `mw db servers` lists them)")
+	cmd.Flags().StringArrayVar(&instances, "instance", nil, "one of your VPS instances, by name or id (repeat; `mw instances` lists them)")
 	return cmd
 }
 

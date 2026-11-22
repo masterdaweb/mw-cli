@@ -16,7 +16,7 @@ func onThisMachine(t *testing.T, psql int, bundle string) {
 	t.Cleanup(func() { localPsqlMajor, localCABundle = prevPsql, prevBundle })
 }
 
-func servers() []map[string]interface{} {
+func instances() []map[string]interface{} {
 	return []map[string]interface{}{
 		{"id": "25380", "name": "web-1", "hostname": nil, "datacenter_id": 2, "addresses": []string{"148.224.62.22", "2804:6dec:10::7"}},
 		{"id": "25381", "name": "worker", "hostname": "worker.example.com", "datacenter_id": 3, "addresses": []string{"148.224.62.23"}},
@@ -24,17 +24,17 @@ func servers() []map[string]interface{} {
 	}
 }
 
-func TestDbAllowPicksAServerByNameOrId(t *testing.T) {
+func TestDbAllowPicksAnInstanceByNameOrId(t *testing.T) {
 	f, srv := newFakeAPI(t)
 	f.answer("GET /v1/databases/loja-prod", 200, database("running"))
-	f.answer("GET /v1/databases/instances", 200, servers())
+	f.answer("GET /v1/databases/instances", 200, instances())
 	f.on("PATCH /v1/databases/loja-prod", func(w http.ResponseWriter, c call) {
 		d := database("running")
 		d["datacenter_id"] = 2
-		d["allowed_vms"] = []map[string]interface{}{servers()[0], servers()[1]}
+		d["allowed_vms"] = []map[string]interface{}{instances()[0], instances()[1]}
 		reply(w, 200, d)
 	})
-	out, _, err := run(t, srv, t.TempDir(), "db", "allow", "loja-prod", "--vm", "WEB-1", "--vm", "25381")
+	out, _, err := run(t, srv, t.TempDir(), "db", "allow", "loja-prod", "--instance", "WEB-1", "--instance", "25381")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,67 +50,52 @@ func TestDbAllowPicksAServerByNameOrId(t *testing.T) {
 		t.Fatalf("said %q", out)
 	}
 
-	// Two servers are called worker: the id decides.
-	if _, _, err := run(t, srv, t.TempDir(), "db", "allow", "loja-prod", "--vm", "worker"); err == nil ||
-		!strings.Contains(err.Error(), "2 servers are called \"worker\"") || !strings.Contains(err.Error(), "25381, 25382") {
+	// Two instances are called worker: the id decides.
+	if _, _, err := run(t, srv, t.TempDir(), "db", "allow", "loja-prod", "--instance", "worker"); err == nil ||
+		!strings.Contains(err.Error(), "2 instances are called \"worker\"") || !strings.Contains(err.Error(), "25381, 25382") {
 		t.Fatalf("an ambiguous name was taken: %v", err)
 	}
 	// One with nothing to allow.
-	if _, _, err := run(t, srv, t.TempDir(), "db", "allow", "loja-prod", "--vm", "25382"); err == nil ||
+	if _, _, err := run(t, srv, t.TempDir(), "db", "allow", "loja-prod", "--instance", "25382"); err == nil ||
 		!strings.Contains(err.Error(), "no public address") {
-		t.Fatalf("a server without an address was taken: %v", err)
+		t.Fatalf("an instance without an address was taken: %v", err)
 	}
-	if _, _, err := run(t, srv, t.TempDir(), "db", "allow", "loja-prod", "--vm", "nope"); err == nil ||
-		!strings.Contains(err.Error(), "mw db servers") {
-		t.Fatalf("an unknown server was taken: %v", err)
+	if _, _, err := run(t, srv, t.TempDir(), "db", "allow", "loja-prod", "--instance", "nope"); err == nil ||
+		!strings.Contains(err.Error(), "mw instances") {
+		t.Fatalf("an unknown instance was taken: %v", err)
 	}
 	if _, _, err := run(t, srv, t.TempDir(), "db", "allow", "loja-prod"); err == nil ||
-		!strings.Contains(err.Error(), "--vm") {
+		!strings.Contains(err.Error(), "--instance") {
 		t.Fatalf("allowed nothing: %v", err)
 	}
 }
 
-func TestDbDisallowTakesAServerOff(t *testing.T) {
+func TestDbDisallowTakesAnInstanceOff(t *testing.T) {
 	f, srv := newFakeAPI(t)
 	d := database("running")
-	d["allowed_vms"] = []map[string]interface{}{servers()[0]}
+	d["allowed_vms"] = []map[string]interface{}{instances()[0]}
 	d["allowed_cidrs"] = []string{"203.0.113.7/32"}
 	f.answer("GET /v1/databases/loja-prod", 200, d)
-	f.answer("GET /v1/databases/instances", 200, servers())
+	f.answer("GET /v1/databases/instances", 200, instances())
 	f.on("PATCH /v1/databases/loja-prod", func(w http.ResponseWriter, c call) {
 		out := database("running")
 		out["allowed_cidrs"] = []string{"203.0.113.7/32"}
 		reply(w, 200, out)
 	})
-	if _, _, err := run(t, srv, t.TempDir(), "db", "disallow", "loja-prod", "--vm", "web-1"); err != nil {
+	if _, _, err := run(t, srv, t.TempDir(), "db", "disallow", "loja-prod", "--instance", "web-1"); err != nil {
 		t.Fatal(err)
 	}
 	body := jsonOf(t, f.last("PATCH /v1/databases/loja-prod").Body)
 	if vms, ok := body["allowed_vms"].([]interface{}); !ok || len(vms) != 0 {
 		t.Fatalf("sent %v", body)
 	}
-	if _, _, err := run(t, srv, t.TempDir(), "db", "disallow", "loja-prod", "--vm", "25381"); err == nil ||
+	if _, _, err := run(t, srv, t.TempDir(), "db", "disallow", "loja-prod", "--instance", "25381"); err == nil ||
 		!strings.Contains(err.Error(), "does not allow worker") {
-		t.Fatalf("took off a server it did not allow: %v", err)
+		t.Fatalf("took off an instance it did not allow: %v", err)
 	}
 	if _, _, err := run(t, srv, t.TempDir(), "db", "disallow", "loja-prod", "198.51.100.9"); err == nil ||
 		!strings.Contains(err.Error(), "loja-prod does not allow 198.51.100.9") {
 		t.Fatalf("took off an address it did not allow: %v", err)
-	}
-}
-
-func TestDbServersListsTheAccountsServers(t *testing.T) {
-	f, srv := newFakeAPI(t)
-	f.answer("GET /v1/databases/instances", 200, servers())
-	f.answer("GET /v1/regions", 200, []map[string]interface{}{{"id": 2, "name": "Belo Horizonte"}, {"id": 3, "name": "Dallas"}})
-	out, _, err := run(t, srv, t.TempDir(), "db", "servers")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"25380", "web-1", "148.224.62.22, 2804:6dec:10::7", "worker"} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("missing %q in %q", want, out)
-		}
 	}
 }
 
