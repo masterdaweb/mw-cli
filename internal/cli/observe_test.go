@@ -260,16 +260,25 @@ func TestEgressSaysWhatWasSentOfWhatIsIncluded(t *testing.T) {
 	}
 }
 
-func TestOutboundIPsListsTheRangesToAllowlist(t *testing.T) {
+func TestOutboundIPsSaysWhetherTheAddressesStay(t *testing.T) {
 	f, srv := newFakeAPI(t)
+	// The egress address and a worker that still sends from its own.
 	f.answer("GET /v1/serverless/outbound-addresses", 200, map[string]interface{}{
-		"ranges": []string{"148.224.62.0/27"}, "addresses": []string{"148.224.62.5", "148.224.62.23"}, "addresses_v6": []string{},
+		"addresses": []string{"148.224.62.5", "148.224.62.200"}, "addresses_v6": []string{}, "stable": false,
 	})
 	out, _, err := run(t, srv, t.TempDir(), "outbound-ips")
-	if err != nil || !strings.Contains(out, "148.224.62.0/27") || !strings.Contains(out, "148.224.62.5, 148.224.62.23") {
+	if err != nil || !strings.Contains(out, "148.224.62.5, 148.224.62.200") || !strings.Contains(out, "may change when the platform replaces a node") {
 		t.Fatalf("outbound-ips: %v %q", err, out)
 	}
-	f.answer("GET /v1/serverless/outbound-addresses", 200, map[string]interface{}{"ranges": []string{}, "addresses": []string{}, "addresses_v6": []string{}})
+	// The egress address alone: every worker is behind it.
+	f.answer("GET /v1/serverless/outbound-addresses", 200, map[string]interface{}{
+		"addresses": []string{"148.224.62.200"}, "addresses_v6": []string{}, "stable": true,
+	})
+	out, _, err = run(t, srv, t.TempDir(), "outbound-ips")
+	if err != nil || !strings.Contains(out, "148.224.62.200") || !strings.Contains(out, "stay the same when the platform replaces a node") || strings.Contains(out, "may change") {
+		t.Fatalf("stable: %v %q", err, out)
+	}
+	f.answer("GET /v1/serverless/outbound-addresses", 200, map[string]interface{}{"addresses": []string{}, "addresses_v6": []string{}, "stable": false})
 	if out, _, err := run(t, srv, t.TempDir(), "outbound"); err != nil || !strings.Contains(out, "No outbound addresses are published yet") {
 		t.Fatalf("empty: %v %q", err, out)
 	}
