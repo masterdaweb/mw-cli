@@ -71,6 +71,9 @@ type ServiceSettings struct {
 	Concurrency    int     `json:"concurrency"`
 	Instances      int     `json:"instances"`
 	CronSchedule   *string `json:"cron_schedule"`
+	// A cron job's time zone and the longest one run may last.
+	CronTimezone       string `json:"cron_timezone,omitempty"`
+	CronTimeoutSeconds int    `json:"cron_timeout_seconds,omitempty"`
 	// RolloutPercent: a new version's first share of the requests; nil, all at once.
 	RolloutPercent *int `json:"rollout_percent"`
 	RolloutMinutes int  `json:"rollout_minutes"`

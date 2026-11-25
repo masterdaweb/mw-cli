@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -249,5 +250,54 @@ func TestSendFileSendsTheFileWithItsLengthAndMethod(t *testing.T) {
 	if method != "PUT" || query != "as=file&path=data%2Fapp.db" || contentType != "application/octet-stream" || key == "" ||
 		length != 15 || string(body) != "SQLite format 3" {
 		t.Fatalf("%s ?%s %s key %q length %d body %q", method, query, contentType, key, length, body)
+	}
+}
+
+// Production, 2026-11-25: during an API deploy, `mw db` printed Cloudflare's
+// whole 502 page as its error, after giving up in 3.5 s.
+func TestAGatewaysPageIsWordedByItsStatusNeverPrinted(t *testing.T) {
+	TransientWait = time.Millisecond
+	defer func() { TransientWait = 500 * time.Millisecond }()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=UTF-8")
+		w.Header().Set("Cf-Ray", "a5fe0671a987016e-GRU")
+		w.WriteHeader(502)
+		_, _ = w.Write([]byte("<!doctype html><html><head><style>:root{}</style></head><body>Bad gateway</body></html>"))
+	}))
+	defer srv.Close()
+	c := New(srv.URL, "mwk_x", "test")
+	var waits []time.Duration
+	c.OnUnavailable = func(d time.Duration) { waits = append(waits, d) }
+	err := c.Do(context.Background(), "GET", "/databases", nil, nil, nil)
+	var p *Problem
+	if !errors.As(err, &p) || strings.Contains(err.Error(), "<") || !strings.Contains(err.Error(), "502") {
+		t.Fatalf("error %q", err)
+	}
+	if p.RequestID != "a5fe0671a987016e-GRU" {
+		t.Fatalf("request id %q", p.RequestID)
+	}
+	if len(waits) != TransientRetries {
+		t.Fatalf("%d waits heard, want %d", len(waits), TransientRetries)
+	}
+	// About half a minute in all, at the real first wait.
+	total := time.Duration(0)
+	for i := 0; i < TransientRetries; i++ {
+		total += (500 * time.Millisecond) << i
+	}
+	if total < 25*time.Second || total > 40*time.Second {
+		t.Fatalf("a deploy outlasts the retries: %s", total)
+	}
+}
+
+func TestAShortPlainRefusalIsKeptAsItCame(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(418)
+		_, _ = w.Write([]byte("short and plain"))
+	}))
+	defer srv.Close()
+	err := New(srv.URL, "mwk_x", "test").Do(context.Background(), "GET", "/x", nil, nil, nil)
+	if err == nil || err.Error() != "short and plain" {
+		t.Fatalf("error %q", err)
 	}
 }

@@ -736,7 +736,14 @@ func statusCmd(a *App) *cobra.Command {
 				if s.InternalURL != nil {
 					fmt.Fprintf(w, "Internal URL\t%s\n", *s.InternalURL)
 				}
-				fmt.Fprintf(w, "Instances\t%d ready (min %d, max %d)\n", s.ReadyInstances, s.Settings.MinInstances, s.Settings.MaxInstances)
+				if strings.EqualFold(s.Kind, "cron") {
+					// A cron job's instances are its runs: what it shows is when they start.
+					// It printed "0 ready (min 0, max 3)" and never its schedule
+					// (production check, 2026-11-25).
+					fmt.Fprintf(w, "Schedule\t%s\n", cronScheduleText(s.Settings))
+				} else {
+					fmt.Fprintf(w, "Instances\t%d ready (min %d, max %d)\n", s.ReadyInstances, s.Settings.MinInstances, s.Settings.MaxInstances)
+				}
 				fmt.Fprintf(w, "Size\t%s\n", sizeText(s.Settings))
 				if d := s.LastDeployment; d != nil {
 					fmt.Fprintf(w, "Last deployment\t#%d %s (%s)\n", d.Number, strings.ToLower(d.Status), d.CreatedAt)
