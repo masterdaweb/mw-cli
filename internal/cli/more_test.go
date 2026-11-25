@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestOutputFormats(t *testing.T) {
@@ -221,5 +222,32 @@ func TestVersionAndCompletion(t *testing.T) {
 	out, _, err = run(t, srv, t.TempDir(), "completion", "bash")
 	if err != nil || !strings.Contains(out, "bash completion") {
 		t.Fatalf("completion: %v", err)
+	}
+}
+
+func TestKeyCreateEndsTheDayHereAndSaysWhen(t *testing.T) {
+	f, srv := newFakeAPI(t)
+	const until = "2027-02-01T02:59:59.000Z"
+	f.answer("POST /v1/object-storage/keys", 200, map[string]interface{}{
+		"key": map[string]interface{}{
+			"id": "k1", "name": "cdn-reader", "access_key_id": "MWAK1", "access": "read_only",
+			"buckets": nil, "expires_at": until, "last_used_at": nil, "created_at": "2026-11-25T15:00:00.000Z",
+		},
+		"secret_access_key": "s3cr3t",
+	})
+	out, _, err := run(t, srv, t.TempDir(), "storage", "keys", "create", "cdn-reader", "--read-only", "--expires", "2027-01-31")
+	if err != nil {
+		t.Fatal(err)
+	}
+	end, _ := endOfDay("2027-01-31")
+	if b := jsonOf(t, f.last("POST /v1/object-storage/keys").Body); b["expires_at"] != end.UTC().Format(time.RFC3339) {
+		t.Errorf("expires_at = %v, want the end of the 31st here, %s", b["expires_at"], end.UTC().Format(time.RFC3339))
+	}
+	// Said with its zone: in a container the day ends in UTC unless TZ says otherwise.
+	if !strings.Contains(out, "It works until "+whenZoned(until)+".") {
+		t.Errorf("out = %q", out)
+	}
+	if _, _, err := run(t, srv, t.TempDir(), "storage", "keys", "create", "cdn", "--expires", "31/01/2027"); err == nil || !strings.Contains(err.Error(), "--expires is a date") {
+		t.Errorf("a date it cannot read: %v", err)
 	}
 }

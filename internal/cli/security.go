@@ -997,8 +997,7 @@ func parseUntil(s string, now time.Time) (time.Time, error) {
 		}
 		return now.Add(d), nil
 	}
-	if t, err := time.ParseInLocation("2006-01-02", s, time.Local); err == nil {
-		t = t.Add(24*time.Hour - time.Second)
+	if t, err := endOfDay(s); err == nil {
 		if !t.After(now) {
 			return time.Time{}, fmt.Errorf("--until %s is in the past", s)
 		}

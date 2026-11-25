@@ -542,6 +542,7 @@ own `psql`, `pg_restore` or `mysql` against the database instead.
 ```sh
 mw storage create loja-uploads
 mw storage keys create backup-job --bucket loja-uploads --read-only
+mw storage keys create cdn-reader --read-only --expires 2027-01-31   # works to 23:59:59 of that day, in this machine's zone (TZ)
 mw storage bind loja-uploads --service web --layout framework   # AWS_* variables, as Laravel reads them
 mw storage info                    # the S3 endpoint and region, for aws, rclone and the SDKs
 mw storage ls loja-uploads/produtos/

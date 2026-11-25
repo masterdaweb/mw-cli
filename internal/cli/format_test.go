@@ -1,6 +1,12 @@
 package cli
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"time"
+	// The zones the tests name, wherever they run.
+	_ "time/tzdata"
+)
 
 func TestMoneyIsPrintedAsTheConsolePrintsIt(t *testing.T) {
 	cases := []struct {
@@ -65,5 +71,43 @@ func TestDotenvValuesAreQuotedAsTheAPIExportsThem(t *testing.T) {
 		if got := dotenvValue(in); got != want {
 			t.Errorf("dotenvValue(%q) = %s, want %s", in, got, want)
 		}
+	}
+}
+
+func TestADayEndsAtItsLastSecondWhereTheMachineIs(t *testing.T) {
+	cases := []struct{ zone, day, want string }{
+		// The end of the 31st in Brasília, not midnight UTC (21:00 the day before).
+		{"America/Sao_Paulo", "2027-01-31", "2027-02-01T02:59:59Z"},
+		// Days the clocks move are 23 and 25 hours long: never an hour late or early.
+		{"America/Chicago", "2026-03-08", "2026-03-09T04:59:59Z"},
+		{"America/Chicago", "2026-11-01", "2026-11-02T05:59:59Z"},
+		{"UTC", " 2027-01-31 ", "2027-01-31T23:59:59Z"},
+	}
+	for _, c := range cases {
+		loc, err := time.LoadLocation(c.zone)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := endOfDayIn(c.day, loc)
+		if err != nil || got.UTC().Format(time.RFC3339) != c.want {
+			t.Errorf("%q in %s = %v, %v; want %s", c.day, c.zone, got.UTC(), err, c.want)
+		}
+	}
+	for _, bad := range []string{"2027-02-31", "31/01/2027", "2027-01-31T10:00", "tomorrow", ""} {
+		if _, err := endOfDay(bad); err == nil {
+			t.Errorf("endOfDay(%q) accepted", bad)
+		}
+	}
+}
+
+func TestAZonedMomentNamesItsZone(t *testing.T) {
+	iso := "2027-02-01T02:59:59.000Z"
+	parsed, _ := time.Parse(time.RFC3339Nano, iso)
+	want := parsed.Local().Format("2006-01-02 15:04:05 MST")
+	if got := whenZoned(iso); got != want || !strings.Contains(got, ":59:59 ") {
+		t.Errorf("whenZoned = %q, want %q", got, want)
+	}
+	if got := whenZoned("not a time"); got != "not a time" {
+		t.Errorf("whenZoned(junk) = %q", got)
 	}
 }

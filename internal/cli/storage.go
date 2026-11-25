@@ -351,12 +351,12 @@ func keysCmd(a *App) *cobra.Command {
 				body["buckets"] = buckets
 			}
 			if expires != "" {
-				t, err := time.ParseInLocation("2006-01-02", expires, time.Local)
+				t, err := endOfDay(expires)
 				if err != nil {
 					return errors.New("--expires is a date, like 2027-01-31")
 				}
 				// The end of that day, where the user is.
-				body["expires_at"] = t.Add(24*time.Hour - time.Second).UTC().Format(time.RFC3339)
+				body["expires_at"] = t.UTC().Format(time.RFC3339)
 			}
 			c, err := a.Client()
 			if err != nil {
@@ -368,6 +368,10 @@ func keysCmd(a *App) *cobra.Command {
 			}
 			return a.print(k, func(w *tabwriter.Writer) {
 				fmt.Fprintf(w, "Key %s (%s, %s).\n", k.Key.Name, keyAccess(k.Key.Access), keyBuckets(k.Key.Buckets))
+				if k.Key.ExpiresAt != nil && *k.Key.ExpiresAt != "" {
+					// With its zone: the day ends where this machine is.
+					fmt.Fprintf(w, "It works until %s.\n", whenZoned(*k.Key.ExpiresAt))
+				}
 				fmt.Fprintln(w, "Its secret is shown this once: keep it somewhere safe.")
 				fmt.Fprintf(w, "  Access key ID\t%s\n", k.Key.AccessKeyID)
 				fmt.Fprintf(w, "  Secret access key\t%s\n", k.SecretAccessKey)
@@ -376,7 +380,7 @@ func keysCmd(a *App) *cobra.Command {
 	}
 	create.Flags().BoolVar(&readOnly, "read-only", false, "read only (default: read and write)")
 	create.Flags().StringArrayVar(&buckets, "bucket", nil, "a bucket it may use (repeat; default: all of them)")
-	create.Flags().StringVar(&expires, "expires", "", "the last day it works, e.g. 2027-01-31")
+	create.Flags().StringVar(&expires, "expires", "", "the last day it works, until 23:59:59 in this machine's time zone (TZ), e.g. 2027-01-31")
 
 	revoke := &cobra.Command{
 		Use:   "revoke <name or access key id>",

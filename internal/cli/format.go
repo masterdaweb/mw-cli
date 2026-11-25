@@ -95,6 +95,33 @@ func dueDay(iso string) string {
 	return t.UTC().Format("2006-01-02")
 }
 
+// endOfDay reads a day (2027-01-31) as its last second where this machine
+// is: 23:59:59 in its time zone. TZ names another, and the binary carries
+// the zone database (cmd/mw imports time/tzdata), so TZ works in a
+// container too, where the zone is otherwise UTC. Never midnight plus
+// 24 hours: a day the clocks move is 23 or 25 hours long.
+func endOfDay(s string) (time.Time, error) {
+	return endOfDayIn(s, time.Local)
+}
+
+func endOfDayIn(s string, loc *time.Location) (time.Time, error) {
+	d, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(s), loc)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return time.Date(d.Year(), d.Month(), d.Day(), 23, 59, 59, 0, loc), nil
+}
+
+// whenZoned prints a moment here with its zone, for when where the day ends
+// matters: "2027-01-31 23:59:59 -03", "… UTC" in a container.
+func whenZoned(iso string) string {
+	t, err := time.Parse(time.RFC3339Nano, iso)
+	if err != nil {
+		return iso
+	}
+	return t.Local().Format("2006-01-02 15:04:05 MST")
+}
+
 func whenPtr(iso *string) string {
 	if iso == nil || *iso == "" {
 		return "—"
