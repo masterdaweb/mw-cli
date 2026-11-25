@@ -68,6 +68,14 @@ docker_manifests:
     image_templates:
       - "ghcr.io/masterdaweb/mw-cli:{{ .Version }}-amd64"
       - "ghcr.io/masterdaweb/mw-cli:{{ .Version }}-arm64"
+  # `latest` is the newest release, for `docker run ghcr.io/masterdaweb/mw-cli`
+  # with no tag (the console's and the npm README's command). A pre-release
+  # (v1.2.3-rc.1) never moves it.
+  - name_template: "ghcr.io/masterdaweb/mw-cli:latest"
+    image_templates:
+      - "ghcr.io/masterdaweb/mw-cli:{{ .Version }}-amd64"
+      - "ghcr.io/masterdaweb/mw-cli:{{ .Version }}-arm64"
+    skip_push: auto
 
 checksum:
   name_template: checksums.txt

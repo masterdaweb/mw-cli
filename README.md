@@ -35,6 +35,8 @@ and the PostgreSQL, MySQL and Redis clients its `connect` commands use:
 docker run --rm -e MW_TOKEN ghcr.io/masterdaweb/mw-cli:<version> instances -o json
 ```
 
+`latest` is the newest release; a pipeline pins a version, as above.
+
 The same image is the console's **Cloud Shell**: a terminal in the browser
 where `mw` is already signed in to your account.
 

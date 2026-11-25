@@ -20,7 +20,7 @@ against that release's `checksums.txt`.
 
 Other ways to install: Homebrew (`brew install masterdaweb/tap/mw`), a script
 (`curl -fsSL https://raw.githubusercontent.com/masterdaweb/mw-cli/main/install.sh | sh`),
-Docker (`docker run --rm -it -e MW_TOKEN ghcr.io/masterdaweb/mw-cli instances`)
+Docker (`docker run --rm -it -e MW_TOKEN ghcr.io/masterdaweb/mw-cli:latest instances`)
 or the binaries on the [releases page](https://github.com/masterdaweb/mw-cli/releases).
 
 ## Sign in
