@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -39,6 +40,8 @@ func TestARateRefusalIsRetriedWithTheSameIdempotencyKey(t *testing.T) {
 	if err := c.Do(context.Background(), "POST", "/serverless/projects", nil, map[string]string{"name": "loja"}, &out); err != nil {
 		t.Fatal(err)
 	}
+	mu.Lock()
+	defer mu.Unlock()
 	if out.Name != "loja" || len(keys) != 3 || keys[0] == "" || keys[0] != keys[1] || keys[1] != keys[2] || len(waits) != 2 {
 		t.Fatalf("name %q, keys %v, waits %v", out.Name, keys, waits)
 	}
@@ -54,9 +57,9 @@ func TestWhatIsNotARateRefusalIsNotRetried(t *testing.T) {
 		// A change is never sent again on a gateway's answer: only a read is.
 		{"POST", 503, ""}, {"POST", 502, ""}, {"DELETE", 504, ""},
 	} {
-		calls := 0
+		var calls atomic.Int32
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			calls++
+			calls.Add(1)
 			if c.retryAfter != "" {
 				w.Header().Set("Retry-After", c.retryAfter)
 			}
@@ -66,8 +69,8 @@ func TestWhatIsNotARateRefusalIsNotRetried(t *testing.T) {
 		err := New(srv.URL, "mwk_x", "test").Do(context.Background(), c.method, "/me", nil, nil, nil)
 		srv.Close()
 		var p *Problem
-		if !errors.As(err, &p) || p.Status != c.status || calls != 1 {
-			t.Errorf("%s %d (Retry-After %q): %v after %d call(s)", c.method, c.status, c.retryAfter, err, calls)
+		if !errors.As(err, &p) || p.Status != c.status || calls.Load() != 1 {
+			t.Errorf("%s %d (Retry-After %q): %v after %d call(s)", c.method, c.status, c.retryAfter, err, calls.Load())
 		}
 		if !errors.Is(err, Code("SOMETHING")) {
 			t.Errorf("%d: the reason does not match: %v", c.status, err)
@@ -79,9 +82,9 @@ func TestAReadThatMeetsAGatewayIsAskedAgain(t *testing.T) {
 	TransientWait = time.Millisecond
 	defer func() { TransientWait = 500 * time.Millisecond }()
 	for _, status := range []int{502, 503, 504} {
-		calls := 0
+		var calls atomic.Int32
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if calls++; calls < 3 {
+			if calls.Add(1) < 3 {
 				w.WriteHeader(status)
 				_, _ = w.Write([]byte("Bad Gateway"))
 				return
@@ -91,31 +94,31 @@ func TestAReadThatMeetsAGatewayIsAskedAgain(t *testing.T) {
 		var out struct{ Name string }
 		err := New(srv.URL, "mwk_x", "test").Do(context.Background(), "GET", "/me", nil, nil, &out)
 		srv.Close()
-		if err != nil || out.Name != "loja" || calls != 3 {
-			t.Errorf("%d: %v, %q after %d call(s)", status, err, out.Name, calls)
+		if err != nil || out.Name != "loja" || calls.Load() != 3 {
+			t.Errorf("%d: %v, %q after %d call(s)", status, err, out.Name, calls.Load())
 		}
 	}
 	// One that stays away is reported as it is, after the tries.
-	calls := 0
+	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
+		calls.Add(1)
 		w.WriteHeader(502)
 	}))
 	defer srv.Close()
 	err := New(srv.URL, "mwk_x", "test").Do(context.Background(), "GET", "/me", nil, nil, nil)
 	var p *Problem
-	if !errors.As(err, &p) || p.Status != 502 || calls != TransientRetries+1 {
-		t.Fatalf("%v after %d call(s)", err, calls)
+	if !errors.As(err, &p) || p.Status != 502 || int(calls.Load()) != TransientRetries+1 {
+		t.Fatalf("%v after %d call(s)", err, calls.Load())
 	}
 }
 
 func TestARequestThatRanOutOfTimeIsNotAskedAgain(t *testing.T) {
 	TransientWait = time.Millisecond
 	defer func() { TransientWait = 500 * time.Millisecond }()
-	calls := 0
+	var calls atomic.Int32
 	release := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
+		calls.Add(1)
 		<-release
 	}))
 	defer srv.Close()
@@ -125,8 +128,8 @@ func TestARequestThatRanOutOfTimeIsNotAskedAgain(t *testing.T) {
 	started := time.Now()
 	err := c.Do(context.Background(), "GET", "/me", nil, nil, nil)
 	// Whoever asked has waited the limit once, not four times over.
-	if err == nil || calls != 1 || time.Since(started) > 2*time.Second {
-		t.Fatalf("%v after %d call(s) and %s", err, calls, time.Since(started))
+	if err == nil || calls.Load() != 1 || time.Since(started) > 2*time.Second {
+		t.Fatalf("%v after %d call(s) and %s", err, calls.Load(), time.Since(started))
 	}
 }
 
@@ -134,9 +137,9 @@ func TestAConnectionThatDropsIsTriedAgainForAReadOnly(t *testing.T) {
 	TransientWait = time.Millisecond
 	defer func() { TransientWait = 500 * time.Millisecond }()
 	for _, method := range []string{"GET", "POST"} {
-		calls := 0
+		var calls atomic.Int32
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if calls++; calls == 1 {
+			if calls.Add(1) == 1 {
 				// The connection closed with no answer.
 				conn, _, _ := w.(http.Hijacker).Hijack()
 				conn.Close()
@@ -146,20 +149,19 @@ func TestAConnectionThatDropsIsTriedAgainForAReadOnly(t *testing.T) {
 		}))
 		err := New(srv.URL, "mwk_x", "test").Do(context.Background(), method, "/me", nil, nil, nil)
 		srv.Close()
-		if method == "GET" && (err != nil || calls != 2) {
-			t.Errorf("GET: %v after %d call(s)", err, calls)
+		if method == "GET" && (err != nil || calls.Load() != 2) {
+			t.Errorf("GET: %v after %d call(s)", err, calls.Load())
 		}
-		if method == "POST" && (err == nil || calls != 1) {
-			t.Errorf("POST: %v after %d call(s)", err, calls)
+		if method == "POST" && (err == nil || calls.Load() != 1) {
+			t.Errorf("POST: %v after %d call(s)", err, calls.Load())
 		}
 	}
 }
 
 func TestAnUnavailableAPIThatSaysWhenIsRetried(t *testing.T) {
-	calls := 0
+	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		if calls == 1 {
+		if calls.Add(1) == 1 {
 			w.Header().Set("Retry-After", "0")
 			w.WriteHeader(503)
 			return
@@ -167,8 +169,8 @@ func TestAnUnavailableAPIThatSaysWhenIsRetried(t *testing.T) {
 		w.WriteHeader(204)
 	}))
 	defer srv.Close()
-	if err := New(srv.URL, "mwk_x", "test").Do(context.Background(), "DELETE", "/serverless/domains/x", nil, nil, nil); err != nil || calls != 2 {
-		t.Fatalf("%v after %d calls", err, calls)
+	if err := New(srv.URL, "mwk_x", "test").Do(context.Background(), "DELETE", "/serverless/domains/x", nil, nil, nil); err != nil || calls.Load() != 2 {
+		t.Fatalf("%v after %d calls", err, calls.Load())
 	}
 }
 
