@@ -90,6 +90,8 @@ func NewRoot(a *App) *cobra.Command {
 		subscriptionsCmd(a), invoicesCmd(a),
 		activityCmd(a), versionCmd(a),
 	)
+	// Before the list aliases, which copy what a group takes: `mw env list web`.
+	addServiceArgs(root)
 	addListAliases(root)
 	addGroups(root)
 	// Help and completion scripts go where the rest of the output goes.
