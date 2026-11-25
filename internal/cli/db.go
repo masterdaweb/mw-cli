@@ -1584,7 +1584,8 @@ func dbDeleteCmd(a *App, engine string) *cobra.Command {
 		Use:   "delete <name>",
 		Short: "Delete a database (protection off, no service bound, name confirmed)",
 		Long: "Delete a database. Its deletion protection must be off and no service may still be\n" +
-			"bound to it. Its backups are kept for a few days, then removed for good.",
+			"bound to it. Its backups are kept for a few days, then removed for good; a database\n" +
+			"with no backups (backups off, or none finished yet) has its data erased at once.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			d, err := a.database(cmd.Context(), args[0], engine)
@@ -1592,6 +1593,9 @@ func dbDeleteCmd(a *App, engine string) *cobra.Command {
 				return err
 			}
 			if confirm != d.Name {
+				if d.Backups == nil || d.Backups.EarliestRestoreAt == nil {
+					return fmt.Errorf("%s has no backups: deleting it erases its data for good. Type its name to confirm: --confirm %s", d.Name, d.Name)
+				}
 				return fmt.Errorf("type the database's name to confirm: --confirm %s", d.Name)
 			}
 			c, _ := a.Client()
@@ -1601,7 +1605,12 @@ func dbDeleteCmd(a *App, engine string) *cobra.Command {
 			}
 			return a.print(out, func(w *tabwriter.Writer) {
 				fmt.Fprintf(w, "%s deleted.", out.Name)
-				if out.PurgeAfter != nil {
+				// Backups to restore from, or none (backups off, or none
+				// finished yet): never promise what is not kept.
+				switch {
+				case out.Backups == nil || out.Backups.EarliestRestoreAt == nil:
+					fmt.Fprint(w, " It had no backups: nothing can be restored.")
+				case out.PurgeAfter != nil:
 					fmt.Fprintf(w, " Its backups are kept until %s.", whenPtr(out.PurgeAfter))
 				}
 				fmt.Fprintln(w)

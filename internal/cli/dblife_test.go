@@ -219,3 +219,36 @@ func httpServer(t *testing.T, h http.Handler) string {
 	t.Cleanup(srv.Close)
 	return srv.URL
 }
+
+func TestDeletingADatabaseSaysWhetherAnythingCanBeRestored(t *testing.T) {
+	f, srv := newFakeAPI(t)
+	kept := database("running")
+	kept["deletion_protection"] = false
+	kept["backups"] = map[string]interface{}{"earliest_restore_at": "2026-11-24T10:00:00Z"}
+	f.answer("GET /v1/databases/loja-prod", 200, kept)
+	deleted := database("deleted")
+	deleted["backups"] = kept["backups"]
+	deleted["purge_after"] = "2026-12-02T13:25:00Z"
+	f.answer("DELETE /v1/databases/loja-prod", 200, deleted)
+	out, _, err := run(t, srv, t.TempDir(), "db", "delete", "loja-prod", "--confirm", "loja-prod")
+	if err != nil || !strings.Contains(out, "loja-prod deleted. Its backups are kept until") {
+		t.Fatalf("with backups: %v\n%s", err, out)
+	}
+
+	// Backups off, or none finished yet: nothing is kept, and it is said
+	// before the name is typed and after.
+	f, srv = newFakeAPI(t)
+	bare := database("running")
+	bare["deletion_protection"] = false
+	f.answer("GET /v1/databases/loja-prod", 200, bare)
+	gone := database("deleted")
+	gone["purge_after"] = "2026-12-02T13:25:00Z"
+	f.answer("DELETE /v1/databases/loja-prod", 200, gone)
+	if _, _, err := run(t, srv, t.TempDir(), "db", "delete", "loja-prod"); err == nil || !strings.Contains(err.Error(), "has no backups: deleting it erases its data for good") {
+		t.Fatalf("unconfirmed, no backups: %v", err)
+	}
+	out, _, err = run(t, srv, t.TempDir(), "db", "delete", "loja-prod", "--confirm", "loja-prod")
+	if err != nil || !strings.Contains(out, "loja-prod deleted. It had no backups: nothing can be restored.") || strings.Contains(out, "kept until") {
+		t.Fatalf("no backups: %v\n%s", err, out)
+	}
+}
