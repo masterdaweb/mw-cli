@@ -119,3 +119,24 @@ func TestListAliasesOnlyWhereTheBareFormLists(t *testing.T) {
 		t.Fatalf("mw vpn list changed: %v", err)
 	}
 }
+
+// Every listing group answers to `list`; where `ls` is a command of its own
+// (`mw storage ls` lists a bucket's files) it stays that command.
+func TestEveryListingGroupHasAListForm(t *testing.T) {
+	root := NewRoot(&App{Version: "test", In: strings.NewReader(""), Out: io.Discard, Err: io.Discard})
+	for _, name := range listingGroups {
+		group, _, err := root.Find([]string{name})
+		if err != nil || group == root {
+			t.Errorf("%s: no such group", name)
+			continue
+		}
+		list, _, err := root.Find([]string{name, "list"})
+		if err != nil || list == group || list.Name() != "list" {
+			t.Errorf("mw %s list: not a command", name)
+		}
+	}
+	ls, _, err := root.Find([]string{"storage", "ls"})
+	if err != nil || ls.Name() != "ls" || !strings.Contains(ls.Short, "files") {
+		t.Errorf("mw storage ls no longer lists a bucket's files: %v %v", ls, err)
+	}
+}

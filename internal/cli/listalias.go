@@ -10,12 +10,17 @@ import (
 // also answers to `list` and `ls`, the words gh, kubectl and docker taught
 // everyone: `mw db list`, `mw instances list` and `mw projects ls` were
 // "unknown command" (production check, 2026-11-25) while `mw vpn list` and
-// `mw custom-images list` worked. Only these: a bare `mw deploy` deploys,
-// `mw security` is an overview, and `mw storage ls` lists a bucket's objects.
+// `mw custom-images list` worked — and so, after that, were `mw storage
+// list`, `mw regions list`, `mw invoices list` and the other listings below.
+// Only these: a bare `mw deploy` deploys, and `mw security`, `mw usage`,
+// `mw wallet` and `mw egress` are reports. `mw storage ls` keeps listing a
+// bucket's files: there only `list` is added.
 var listingGroups = []string{
 	"projects", "services", "db", "redis", "instances", "firewalls", "vpcs",
 	"ssh-keys", "webhooks", "subscriptions", "operations", "templates",
 	"registry", "groups", "deployments", "domains", "drains", "env", "alerts",
+	"storage", "images", "plans", "regions", "addons", "orders", "dns", "rdns",
+	"outbound-ips", "invoices", "activity",
 }
 
 // addListAliases gives each listing group a hidden `list` subcommand (and
