@@ -30,26 +30,41 @@ func (a *App) waitFor(ctx context.Context, name, engine string, want []string, f
 	ctx, cancel := context.WithTimeout(ctx, 6*time.Hour)
 	defer cancel()
 	last := ""
+	var d *api.Database
+	still := func() error {
+		return fmt.Errorf("%s is still %s: `mw db get %s` follows it", name, dbStatus(last), name)
+	}
+	reached, quiet := time.Now(), false
 	for {
-		d, err := a.database(ctx, name, engine)
-		if err != nil {
-			return nil, err
-		}
-		if d.Status != last {
-			last = d.Status
-			a.printf("  %s\n", dbStatus(d.Status))
-		}
-		for _, w := range want {
-			if d.Status == w && !(w == "running" && d.ChangesPending) {
-				return d, nil
+		fresh, err := a.database(ctx, name, engine)
+		switch {
+		case err != nil && ctx.Err() != nil:
+			return d, still()
+		case err != nil && !waitThrough(err, reached):
+			return d, fmt.Errorf("%w — the change carries on: `mw db get %s` follows it", err, name)
+		case err != nil:
+			if !quiet {
+				quiet = true
+				a.printf("  (no answer from the API for now: still waiting)\n")
 			}
-		}
-		if d.Status == "failed" || d.Status == "deleted" || (d.Notice != nil && *d.Notice == "hibernate_failed") {
-			return d, fmt.Errorf("%s %s: %s", d.Name, failed, str(d.Failure))
+		default:
+			d, reached, quiet = fresh, time.Now(), false
+			if d.Status != last {
+				last = d.Status
+				a.printf("  %s\n", dbStatus(d.Status))
+			}
+			for _, w := range want {
+				if d.Status == w && !(w == "running" && d.ChangesPending) {
+					return d, nil
+				}
+			}
+			if d.Status == "failed" || d.Status == "deleted" || (d.Notice != nil && *d.Notice == "hibernate_failed") {
+				return d, fmt.Errorf("%s %s: %s", d.Name, failed, str(d.Failure))
+			}
 		}
 		select {
 		case <-ctx.Done():
-			return d, fmt.Errorf("%s is still %s: `mw db get %s` follows it", name, dbStatus(last), name)
+			return d, still()
 		case <-time.After(pollEvery):
 		}
 	}
