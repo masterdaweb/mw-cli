@@ -991,6 +991,14 @@ func TestServicesCreateBuildsFromARepository(t *testing.T) {
 	if !strings.Contains(out, "Service web created in loja.") || !strings.Contains(out, "Deployment #1 of web:") || !strings.Contains(out, "Deployment #1 is live") {
 		t.Fatalf("out: %s", out)
 	}
+	// An image's own command replaced at once (it took a create and an update).
+	f.answer("POST /v1/serverless/images/inspect", 200, map[string]interface{}{"ports": []int{}, "volumes": []string{}, "user": nil})
+	if _, _, err := run(t, srv, t.TempDir(), "services", "create", "fila", "--project", "loja", "--image", "node:22-alpine", "--kind", "worker", "--start-command", "sleep infinity", "--detach"); err != nil {
+		t.Fatal(err)
+	}
+	if settings, _ := jsonOf(t, f.last("POST /v1/serverless/projects/"+pid+"/services").Body)["settings"].(map[string]interface{}); settings["start_command"] != "sleep infinity" {
+		t.Fatalf("settings %v", settings)
+	}
 	// --detach returns once it is made, saying how to follow.
 	out, _, err = run(t, srv, t.TempDir(), "services", "create", "api", "--project", "loja", "--repo", "ana/loja", "--detach")
 	if err != nil || !strings.Contains(out, "Deployment #1 of web queued: `mw deployments follow --service web` follows it.") || strings.Contains(out, "is live") {
