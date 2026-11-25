@@ -46,6 +46,35 @@ func TestRestoreMakesANewDatabaseToAnInstantAndWaitsForIt(t *testing.T) {
 	}
 }
 
+func TestRestoreFindsADeletedDatabaseByItsName(t *testing.T) {
+	f, srv := newFakeAPI(t)
+	// Reading a deleted database by name is a 404; the account's list still
+	// has it, marked deleted, while its backups are kept.
+	f.answer("GET /v1/databases/loja-velha", 404, map[string]interface{}{"status": 404, "code": "DATABASE_NOT_FOUND", "detail": "No database named loja-velha in this account."})
+	gone := database("deleted")
+	gone["name"] = "loja-velha"
+	f.answer("GET /v1/databases", 200, []map[string]interface{}{database("running"), gone})
+	made := database("running")
+	made["name"] = "loja-volta"
+	f.answer("POST /v1/databases/loja-velha/restore", 200, map[string]interface{}{"database": made, "password": "Zq8sR2vX9pLm4TnB7wYc1KdH6gFj3eAu"})
+	f.answer("GET /v1/databases/loja-volta", 200, made)
+	out, _, err := run(t, srv, t.TempDir(), "db", "restore", "loja-velha", "--to", "loja-volta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body := jsonOf(t, f.last("POST /v1/databases/loja-velha/restore").Body); body["name"] != "loja-volta" || body["target"] != "latest" {
+		t.Fatalf("body %v", body)
+	}
+	if !strings.Contains(out, "Restoring loja-velha into loja-volta") {
+		t.Errorf("output:\n%s", out)
+	}
+	// A name that is neither live nor deleted is still the API's 404.
+	f.answer("GET /v1/databases/nunca", 404, map[string]interface{}{"status": 404, "code": "DATABASE_NOT_FOUND", "detail": "No database named nunca in this account."})
+	if _, _, err := run(t, srv, t.TempDir(), "db", "restore", "nunca", "--to", "x"); err == nil || !strings.Contains(err.Error(), "nunca") {
+		t.Fatalf("an unknown name: %v", err)
+	}
+}
+
 func TestRestorePointsAreListedInWords(t *testing.T) {
 	f, srv := newFakeAPI(t)
 	n := 12

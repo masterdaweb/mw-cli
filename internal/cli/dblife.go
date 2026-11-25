@@ -72,6 +72,30 @@ func pointText(p api.DatabaseRestorePoint) string {
 	return "marked by hand"
 }
 
+// restoreSource is the database a restore copies from: the live one of that
+// name, else a deleted one whose backups are still kept (the API restores
+// the newest deleted one of a name). The API restores both by name, but
+// reading one by name (`GET /databases/<name>`) finds live databases only:
+// the deleted ones are in the account's list, marked "deleted", until their
+// backups go.
+func (a *App) restoreSource(ctx context.Context, name string) (*api.Database, error) {
+	d, err := a.database(ctx, name, "")
+	var p *api.Problem
+	if err == nil || !errors.As(err, &p) || p.Status != http.StatusNotFound {
+		return d, err
+	}
+	all, lerr := a.databases(ctx, "")
+	if lerr != nil {
+		return nil, err
+	}
+	for i := range all {
+		if all[i].Name == name && all[i].Status == "deleted" {
+			return &all[i], nil
+		}
+	}
+	return nil, err
+}
+
 func dbRestoreCmd(a *App) *cobra.Command {
 	var to, at, point, size, location, edition, productKey string
 	var detach, acceptTerms, attested bool
@@ -82,7 +106,9 @@ func dbRestoreCmd(a *App) *cobra.Command {
 			"over it): to the latest moment its backups hold (the default), to an instant (--time) or\n" +
 			"to a restore point (--point, see `restore-points`). The new database has its own name,\n" +
 			"address and owner password, the same database and user names; your services keep\n" +
-			"using the original until you switch them (the console's restored database page).\n\n" +
+			"using the original until you switch them (the console's restored database page).\n" +
+			"A deleted database is restored the same way, by its name, while its backups are kept\n" +
+			"(`mw db` lists it as deleted, with the date they go).\n\n" +
 			"SQL Server: Microsoft's licence terms are accepted again for the new machine. It runs\n" +
 			"the original's edition (and its product key) unless --edition says another — a restore\n" +
 			"is how an edition goes down to Express; your own licence must cover the new machine too.",
@@ -112,7 +138,7 @@ func dbRestoreCmd(a *App) *cobra.Command {
 			if size != "" {
 				body["size"] = size
 			}
-			src, err := a.database(cmd.Context(), args[0], "")
+			src, err := a.restoreSource(cmd.Context(), args[0])
 			if err != nil {
 				return err
 			}
