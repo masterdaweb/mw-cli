@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -150,6 +152,39 @@ func TestAConnectionThatDropsIsTriedAgainForAReadOnly(t *testing.T) {
 		}))
 		err := New(srv.URL, "mwk_x", "test").Do(context.Background(), method, "/me", nil, nil, nil)
 		srv.Close()
+		if method == "GET" && (err != nil || calls.Load() != 2) {
+			t.Errorf("GET: %v after %d call(s)", err, calls.Load())
+		}
+		if method == "POST" && (err == nil || calls.Load() != 1) {
+			t.Errorf("POST: %v after %d call(s)", err, calls.Load())
+		}
+	}
+}
+
+type roundTrip func(*http.Request) (*http.Response, error)
+
+func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// A connection the network dropped, which the system then gave up on, is no
+// time limit of ours: a read is asked again (production 2026-11-25).
+func TestAConnectionTheSystemGaveUpOnIsTriedAgainForAReadOnly(t *testing.T) {
+	TransientWait = time.Millisecond
+	defer func() { TransientWait = 500 * time.Millisecond }()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	for _, method := range []string{"GET", "POST"} {
+		var calls atomic.Int32
+		c := New(srv.URL, "mwk_x", "test")
+		c.HTTP = &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
+			if calls.Add(1) == 1 {
+				// "read tcp …: read: operation timed out"
+				return nil, &net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ETIMEDOUT)}
+			}
+			return http.DefaultTransport.RoundTrip(r)
+		})}
+		err := c.Do(context.Background(), method, "/me", nil, nil, nil)
 		if method == "GET" && (err != nil || calls.Load() != 2) {
 			t.Errorf("GET: %v after %d call(s)", err, calls.Load())
 		}

@@ -20,6 +20,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -299,9 +300,15 @@ var (
 
 // passing: a gateway's own answer, or a connection that failed at once. A
 // request that ran into its time limit is not asked again here: the caller
-// has waited long enough, and decides.
+// has waited long enough, and decides. A connection the network dropped and
+// the system then gave up on (ETIMEDOUT, "read: operation timed out") is no
+// time limit of ours: asked again like one reset (production 2026-11-25:
+// `mw db create` ended on one while its database was being made).
 func passing(res *http.Response, err error) bool {
 	if err != nil {
+		if errors.Is(err, syscall.ETIMEDOUT) {
+			return true
+		}
 		var timeout interface{ Timeout() bool }
 		return !(errors.As(err, &timeout) && timeout.Timeout())
 	}

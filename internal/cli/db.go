@@ -374,29 +374,43 @@ func (a *App) waitDatabase(ctx context.Context, name, engine string) error {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Minute)
 	defer cancel()
 	last := ""
+	still := func() error {
+		return fmt.Errorf("%s is still %s: `mw db get %s` follows it", name, dbStatus(last), name)
+	}
+	reached, quiet := time.Now(), false
 	for {
 		d, err := a.database(ctx, name, engine)
-		if err != nil {
-			return err
-		}
-		if d.Status != last {
-			last = d.Status
-			a.printf("  %s\n", dbStatus(d.Status))
-		}
-		switch d.Status {
-		case "running":
-			if !d.ChangesPending {
-				a.printf("%s is ready: `mw %s connect %s`.\n", d.Name, group(d.Engine), d.Name)
-				return nil
+		switch {
+		case err != nil && ctx.Err() != nil:
+			return still()
+		case err != nil && !waitThrough(err, reached):
+			return fmt.Errorf("%w — %s carries on: `mw db get %s` follows it", err, name, name)
+		case err != nil:
+			if !quiet {
+				quiet = true
+				a.printf("  (no answer from the API for now: still waiting)\n")
 			}
-		case "failed":
-			return fmt.Errorf("%s could not be created: %s", d.Name, str(d.Failure))
-		case "deleted":
-			return fmt.Errorf("%s was deleted", d.Name)
+		default:
+			reached, quiet = time.Now(), false
+			if d.Status != last {
+				last = d.Status
+				a.printf("  %s\n", dbStatus(d.Status))
+			}
+			switch d.Status {
+			case "running":
+				if !d.ChangesPending {
+					a.printf("%s is ready: `mw %s connect %s`.\n", d.Name, group(d.Engine), d.Name)
+					return nil
+				}
+			case "failed":
+				return fmt.Errorf("%s could not be created: %s", d.Name, str(d.Failure))
+			case "deleted":
+				return fmt.Errorf("%s was deleted", d.Name)
+			}
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("%s is still %s: `mw db get %s` follows it", name, dbStatus(last), name)
+			return still()
 		case <-time.After(pollEvery):
 		}
 	}

@@ -517,6 +517,16 @@ func permanent(err error) bool {
 	return false
 }
 
+// waitThrough says whether a wait carries on after a poll that failed: an
+// answer that settles it (refused, not found, signed out) ends it; the API
+// restarting or the network gone a moment is waited through, for up to two
+// minutes since the last answer — the work goes on on the platform either
+// way (production 2026-11-25: `mw db create` ended on one dropped connection
+// while its database was being made).
+func waitThrough(err error, reached time.Time) bool {
+	return !permanent(err) && time.Since(reached) <= 40*pollEvery
+}
+
 // openUpload is the database's import still waiting for its file, if any.
 func (a *App) openUpload(ctx context.Context, name string) (*api.DatabaseJob, error) {
 	jobs, err := a.jobs(ctx, name)

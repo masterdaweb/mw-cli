@@ -354,6 +354,43 @@ func TestDbCreateShowsThePasswordOnceAndWaitsUntilReady(t *testing.T) {
 	}
 }
 
+// The API restarting, or the network gone a moment, while a new database
+// is being made is waited through and said once (production 2026-11-25:
+// `mw db create` ended on one dropped connection while its database was
+// being made).
+func TestDbCreateWaitsThroughTheAPINotAnswering(t *testing.T) {
+	f, srv := newFakeAPI(t)
+	f.answer("GET /v1/databases/info", 200, map[string]interface{}{
+		"available": true,
+		"engines": []map[string]interface{}{{"engine": "postgres", "versions": []int{18},
+			"sizes": []map[string]interface{}{{"code": "pg-1-1", "cpus": 1, "memory_mb": 1024, "disk_gb": 10, "hourly_micro_cents": "62500", "monthly_micro_cents": "45625000"}}}},
+	})
+	f.answer("POST /v1/databases", 200, map[string]interface{}{"database": database("provisioning"), "password": "Zq8sR2vX9pLm4TnB7wYc1KdH6gFj3eAu"})
+	f.answer("GET /v1/databases/locations", 200, []map[string]interface{}{
+		{"id": 1, "name": "Belo Horizonte", "deployable": true, "instances": 1},
+	})
+	polls := 0
+	f.on("GET /v1/databases/loja-prod", func(w http.ResponseWriter, _ call) {
+		polls++
+		switch {
+		case polls == 1:
+			reply(w, 200, database("provisioning"))
+		case polls <= 1+2*(api.TransientRetries+1):
+			// Two polls' worth of a gateway with no API behind it.
+			w.WriteHeader(http.StatusBadGateway)
+		default:
+			reply(w, 200, database("running"))
+		}
+	})
+	out, _, err := run(t, srv, t.TempDir(), "db", "create", "loja-prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(out, "still waiting") != 1 || !strings.Contains(out, "loja-prod is ready") {
+		t.Fatalf("said %q", out)
+	}
+}
+
 func TestDbCreateTellsADeveloperWhoHasThePassword(t *testing.T) {
 	f, srv := newFakeAPI(t)
 	f.answer("GET /v1/databases/info", 200, map[string]interface{}{
