@@ -90,6 +90,7 @@ func NewRoot(a *App) *cobra.Command {
 		subscriptionsCmd(a), invoicesCmd(a),
 		activityCmd(a), versionCmd(a),
 	)
+	addListAliases(root)
 	addGroups(root)
 	// Help and completion scripts go where the rest of the output goes.
 	root.SetOut(a.Out)
@@ -118,6 +119,11 @@ func (a *App) Client() (*api.Client, error) {
 			fmt.Fprintf(a.Err, "The API asked to slow down: trying again in %s…\n", d.Round(time.Second))
 		}
 	}
+	a.client.OnUnavailable = func(d time.Duration) {
+		if d >= 2*time.Second {
+			fmt.Fprintf(a.Err, "The API is not answering (it may be restarting): trying again in %s…\n", d.Round(time.Second))
+		}
+	}
 	return a.client, nil
 }
 
@@ -130,16 +136,60 @@ func firstNonEmpty(v ...string) string {
 	return ""
 }
 
-// print writes v as JSON or YAML with -o json|yaml, else the table.
+// print writes v as JSON or YAML with -o json|yaml, else the table. A table
+// whose first line is a header (`listHeader`) is a list, and -q and
+// --no-headers act on it as on printList's: `mw db -q` printed the whole table
+// (production check, 2026-11-25) though `mw --help` promises the ids alone.
 func (a *App) print(v interface{}, table func(w *tabwriter.Writer)) error {
 	if a.JSON {
 		return a.encode(v)
 	}
-	w := tabwriter.NewWriter(a.Out, 0, 4, 2, ' ', 0)
-	if table != nil {
-		table(w)
+	if table == nil {
+		return nil
 	}
+	if (a.Quiet || a.NoHeaders) && isList(table) {
+		if a.Quiet {
+			for _, line := range tableLines(table, '\t')[1:] {
+				fmt.Fprintln(a.Out, strings.SplitN(line, "\t", 2)[0])
+			}
+			return nil
+		}
+		// The same alignment as with the header, the header left out.
+		for _, line := range tableLines(table, ' ')[1:] {
+			fmt.Fprintln(a.Out, line)
+		}
+		return nil
+	}
+	w := tabwriter.NewWriter(a.Out, 0, 4, 2, ' ', 0)
+	table(w)
 	return w.Flush()
+}
+
+// listHeader is a list's first line: capitals, one column per tab ("NAME\tENGINE\tTHIS MONTH").
+var listHeader = regexp.MustCompile(`^[A-Z][A-Z0-9 ./()_-]*(\t+[A-Z][A-Z0-9 ./()_-]*)+\t*$`)
+
+// isList: `table` starts with a list's header (anything else — a detail, a
+// sentence — prints as it is, whatever -q says).
+func isList(table func(w *tabwriter.Writer)) bool {
+	lines := tableLines(table, '\t')
+	return len(lines) > 0 && listHeader.MatchString(lines[0])
+}
+
+// tableLines renders `table` padded with `pad`: tabs keep each line's first
+// cell up to its first tab; spaces are the table as printed.
+func tableLines(table func(w *tabwriter.Writer), pad byte) []string {
+	var raw strings.Builder
+	w := tabwriter.NewWriter(&raw, 0, 4, 2, pad, 0)
+	if pad == '\t' {
+		w = tabwriter.NewWriter(&raw, 0, 8, 1, '\t', 0)
+	}
+	table(w)
+	_ = w.Flush()
+	out := strings.TrimRight(raw.String(), "\n")
+	if out == "" {
+		return nil
+	}
+	return strings.Split(out, "\n")
 }
 
 func (a *App) printf(format string, args ...interface{}) {

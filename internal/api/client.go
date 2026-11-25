@@ -34,6 +34,10 @@ type Client struct {
 	HTTP      *http.Client
 	// OnWait, when set, hears of each wait before a retry.
 	OnWait func(time.Duration)
+	// OnUnavailable, when set, hears of each wait before a read is asked
+	// again because the API did not answer (a gateway's 502/504, a dropped
+	// connection) — an API being deployed, for half a minute.
+	OnUnavailable func(time.Duration)
 }
 
 // New returns a client for a base URL (no trailing slash, no /v1) and token.
@@ -251,10 +255,14 @@ func (c *Client) send(ctx context.Context, h *http.Client, method, path string, 
 			if res != nil {
 				res.Body.Close()
 			}
+			wait := TransientWait << attempt
+			if c.OnUnavailable != nil {
+				c.OnUnavailable(wait)
+			}
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(TransientWait << attempt):
+			case <-time.After(wait):
 			}
 			continue
 		}
@@ -280,9 +288,12 @@ func (c *Client) send(ctx context.Context, h *http.Client, method, path string, 
 
 // TransientRetries is how many times a read is asked again after an answer
 // that says nothing of what was asked (a gateway's 502 or 504, a dropped
-// connection), TransientWait the first wait, doubled each time.
+// connection), TransientWait the first wait, doubled each time: 0.5 + 1 + 2
+// + 4 + 8 + 16 s, about half a minute — what an API deploy takes. Three
+// tries (3.5 s) ended `mw db` in a Cloudflare error page during one
+// (production, 2026-11-25).
 var (
-	TransientRetries = 3
+	TransientRetries = 6
 	TransientWait    = 500 * time.Millisecond
 )
 
@@ -334,10 +345,14 @@ func (c *Client) answer(res *http.Response, out interface{}) error {
 	if res.StatusCode >= 300 {
 		p := &Problem{Status: res.StatusCode}
 		if json.Unmarshal(raw, p) != nil || (p.Code == "" && p.Detail == "") {
-			p.Detail = strings.TrimSpace(string(raw))
+			p.Detail = unreadable(res, raw)
 		}
 		if p.RequestID == "" {
 			p.RequestID = res.Header.Get("X-Request-Id")
+		}
+		if p.RequestID == "" {
+			// A refusal from the edge: its Ray ID is what support looks up.
+			p.RequestID = res.Header.Get("Cf-Ray")
 		}
 		return p
 	}
@@ -348,6 +363,27 @@ func (c *Client) answer(res *http.Response, out interface{}) error {
 		return fmt.Errorf("unexpected answer from the API: %w", err)
 	}
 	return nil
+}
+
+// unreadable words an answer that carries no API error: a short plain text as
+// it came, anything else — an HTML page from the edge, a proxy's error — by
+// its status. `mw db` printed Cloudflare's whole 502 page, styles and logo
+// included, while the API was being deployed (production, 2026-11-25).
+func unreadable(res *http.Response, raw []byte) string {
+	text := strings.TrimSpace(string(raw))
+	html := strings.Contains(strings.ToLower(res.Header.Get("Content-Type")), "html") || strings.HasPrefix(text, "<")
+	if text != "" && !html && len(text) <= 300 {
+		return text
+	}
+	switch res.StatusCode {
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout,
+		520, 521, 522, 523, 524:
+		return fmt.Sprintf("the API is not answering right now (HTTP %d): it may be restarting, try again in a minute", res.StatusCode)
+	}
+	if t := http.StatusText(res.StatusCode); t != "" {
+		return fmt.Sprintf("the API answered HTTP %d (%s) without saying why", res.StatusCode, t)
+	}
+	return fmt.Sprintf("the API answered HTTP %d without saying why", res.StatusCode)
 }
 
 // Page is a v1 list.
