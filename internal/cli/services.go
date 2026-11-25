@@ -319,7 +319,7 @@ func servicesCmd(a *App) *cobra.Command {
 
 	var (
 		image, kind, repo, branch, provider, connection, registry, volume string
-		schedule, timezone, sizeCode                                      string
+		schedule, timezone, sizeCode, createStart                         string
 		port, minInstances, maxInstances, instances                       int
 		envs                                                              []string
 		createRun                                                         deployRun
@@ -422,6 +422,13 @@ func servicesCmd(a *App) *cobra.Command {
 					settings["max_instances"] = 1
 				}
 			}
+			// An image whose own command is not the one to run (a worker on
+			// node:22 that should `sleep infinity`, a CLI image): set at once,
+			// where it took a create and then an update (production check,
+			// 2026-11-25).
+			if cmd.Flags().Changed("start-command") {
+				settings["start_command"] = createStart
+			}
 			if len(settings) > 0 {
 				body["settings"] = settings
 			}
@@ -488,6 +495,7 @@ func servicesCmd(a *App) *cobra.Command {
 	create.Flags().IntVar(&minInstances, "min-instances", 0, "web and private: instances kept on without traffic (default 0: it sleeps)")
 	create.Flags().IntVar(&maxInstances, "max-instances", 0, "web and private: the most instances it scales to (what the account's limits reserve)")
 	create.Flags().IntVar(&instances, "instances", 0, "workers: how many run")
+	create.Flags().StringVar(&createStart, "start-command", "", "the command that starts it, instead of the image's or the detected one")
 	create.Flags().BoolVar(&createRun.detach, "detach", false, "do not wait for the first deployment to finish")
 	create.Flags().BoolVar(&createRun.noBuildLog, "no-build-log", false, "follow the steps alone, without what the build prints")
 	create.Flags().StringArrayVar(&envs, "env", nil, "a variable, KEY=value (repeat)")
