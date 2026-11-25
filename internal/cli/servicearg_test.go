@@ -58,3 +58,25 @@ func TestEveryServiceCommandSaysItTakesTheService(t *testing.T) {
 		t.Fatalf("mw env list web: %v", err)
 	}
 }
+
+// A cron job's status printed "0 ready (min 0, max 3)" and never its schedule.
+func TestACronJobsStatusSaysWhenItRuns(t *testing.T) {
+	f, srv := newFakeAPI(t)
+	tick := service("CRON", "IMAGE")
+	settings := tick["settings"].(map[string]interface{})
+	settings["cron_schedule"] = "*/2 * * * *"
+	settings["cron_timezone"] = "America/Sao_Paulo"
+	f.answer("GET /v1/serverless/services", 200, page(tick))
+	out, _, err := run(t, srv, t.TempDir(), "status", "web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "*/2 * * * * (America/Sao_Paulo)") || strings.Contains(out, "Instances") {
+		t.Fatalf("status %q", out)
+	}
+	// And -o json keeps the zone the API answered.
+	out, _, err = run(t, srv, t.TempDir(), "status", "web", "-o", "json")
+	if err != nil || !strings.Contains(out, `"cron_timezone": "America/Sao_Paulo"`) {
+		t.Fatalf("json %q %v", out, err)
+	}
+}

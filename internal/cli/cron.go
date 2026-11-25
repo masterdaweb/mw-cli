@@ -2,7 +2,10 @@ package cli
 
 import (
 	"errors"
+	"fmt"
 	"strings"
+
+	"github.com/masterdaweb/mw-cli/internal/api"
 )
 
 // cronSettings is what a cron job is created with: its schedule, and the time
@@ -25,4 +28,16 @@ func cronSettings(kind, schedule, timezone string) (map[string]interface{}, erro
 		s["cron_timezone"] = timezone
 	}
 	return s, nil
+}
+
+// cronScheduleText is a cron job's schedule with the time zone it is read in:
+// "*/2 * * * * (America/Sao_Paulo)".
+func cronScheduleText(s api.ServiceSettings) string {
+	if s.CronSchedule == nil || strings.TrimSpace(*s.CronSchedule) == "" {
+		return "—"
+	}
+	if s.CronTimezone == "" {
+		return *s.CronSchedule
+	}
+	return fmt.Sprintf("%s (%s)", *s.CronSchedule, s.CronTimezone)
 }
