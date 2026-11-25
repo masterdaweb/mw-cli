@@ -580,3 +580,18 @@ Releases: `git tag vX.Y.Z && goreleaser release --clean` builds every
 system's binary, the archives and their checksums, and updates the Homebrew
 formula. The npm package (`npm/`) fetches the archive of its own version from
 the release.
+
+Pushing a `vX.Y.Z` tag runs all of it in GitHub Actions (`release.yml`): the
+image gets `X.Y.Z` and `latest` (a pre-release never moves `latest`), and the
+npm package is staged for a maintainer to approve on npmjs.com.
+
+The console's Cloud Shell runs this image by DIGEST, not by `latest`: its pod
+receives the customer's token, so the cluster admits only the exact image it
+names. After a release, move it in this order, or new sessions are refused:
+
+1. add the new digest (`docker buildx imagetools inspect ghcr.io/masterdaweb/mw-cli:X.Y.Z`)
+   to `platformImages` in mw-serverless-platform's
+   `policies/tenant-image-registries.yaml`, on `dev` and `production`;
+2. set `CLOUD_SHELL_IMAGE` in mw-api-v2's `src/cloud-shell/cloud-shell.service.ts`
+   and deploy the API;
+3. remove the old digest from the policy.
